@@ -2,3 +2,4 @@
 
 - Initial project setup
 - Added config dependency
+- Added utils and debug functions
