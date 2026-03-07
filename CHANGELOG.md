@@ -38,3 +38,7 @@
 
 - Added BetterBugle and ReplaceBingBong
 - Play sounds and music in game with the Bugle (need a server to host the audio like mine), and can also with same server host sounds that start with SFX_VO_BingBong_ to replace voicelines (or add more) to BingBong
+
+# v0.1.8 | Changed dependencies
+
+- Added ModConfig and PeakPresence (my mod), Updated BepInEx
