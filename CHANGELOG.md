@@ -33,3 +33,8 @@
 
 - Added StashedBugleModule
 - StashedBugleModule adds a new keybind to toggle give / remove a Bugle.
+
+# v0.1.7 | Better Bugle + Replace Bing Bong
+
+- Added BetterBugle and ReplaceBingBong
+- Play sounds and music in game with the Bugle (need a server to host the audio like mine), and can also with same server host sounds that start with SFX_VO_BingBong_ to replace voicelines (or add more) to BingBong

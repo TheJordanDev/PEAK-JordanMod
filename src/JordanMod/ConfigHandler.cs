@@ -16,6 +16,16 @@ public static class ConfigHandler
     // Stashed Bugle settings
     public static ConfigEntry<KeyCode> ToggleBugle { get; private set; } = null!;
 
+    // Better Bugle settings
+    public static ConfigEntry<KeyCode> SyncAudioRepository { get; private set; } = null!;
+    public static ConfigEntry<float> BugleVolume { get; private set; } = null!;
+    public static ConfigEntry<string> BugleSoundAPIURL { get; private set; } = null!;
+    public static ConfigEntry<bool> AutoSyncAudioRepository { get; private set; } = null!;
+    public static ConfigEntry<string> AudioRepositorySubdirectory { get; private set; } = null!;
+
+    public static ConfigEntry<string> FavoriteSongsList { get; private set; } = null!;
+    public static ConfigEntry<KeyCode> FavoriteSongToggleKey { get; private set; } = null!;
+
     public static void Initialize(ConfigFile configFile)
     {
 		Config = configFile;
@@ -46,6 +56,46 @@ public static class ConfigHandler
             KeyCode.V,
             new ConfigDescription("Give / destroy Bugle")
         );
+		
+        // Better Bugle settings
+        BugleVolume = Config.Bind(
+            "Better Bugle",
+            "BugleVolume",
+            0.5f,
+            new ConfigDescription(
+                "Bugle Sound Volume",
+                new AcceptableValueRange<float>(0f, 1f)
+            )
+        );
+
+        BugleSoundAPIURL = Config.Bind(
+            "Better Bugle",
+            "BugleSoundAPIURL",
+            "",
+            new ConfigDescription("Bugle Sound API URL")
+        );
+
+        SyncAudioRepository = Config.Bind(
+            "Better Bugle",
+            "SyncAudioRepository",
+            KeyCode.L,
+            new ConfigDescription("Manually sync audio repository from git")
+        );
+
+        FavoriteSongsList = Config.Bind(
+            "Better Bugle",
+            "FavoriteSongsList",
+            "",
+            new ConfigDescription("Comma-separated list of favorite song names")
+        );
+
+        FavoriteSongToggleKey = Config.Bind(
+            "Better Bugle",
+            "FavoriteSongToggleKey",
+            KeyCode.Asterisk,
+            new ConfigDescription("Key to toggle favorite status of current song")
+        );
+
 	}
 
 }
