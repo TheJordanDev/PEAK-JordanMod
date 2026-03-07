@@ -4,3 +4,7 @@
 - Added config dependency
 - Added utils and debug functions
 - Added config handler
+
+# v0.1.1 | Throw passport anywhere patch
+
+- Added PassportPatch.cs and registerd it as GlobalPatch in Plugin.cs

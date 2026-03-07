@@ -16,7 +16,9 @@ public partial class Plugin : BaseUnityPlugin
     private static Harmony? _harmony;
     private ModuleManager? _moduleManager;
 
-    private static readonly List<Type> _globalPatches = [];
+    private static readonly List<Type> _globalPatches = [
+        typeof(Patches.PassportPatch),
+    ];
 
     private void Awake()
     {
