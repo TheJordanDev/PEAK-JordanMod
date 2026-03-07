@@ -13,3 +13,8 @@
 
 - Added BagsForEveryoneModule and BagsForEveryonePatch
 - BagsForEveryonePatch adds a postfix to SingleItemSpawner.TrySpawnItems that checks if the spawner is the first one in the biome, and if so, it spawns extra bags based on the player count.
+
+# v0.1.3 | Easy Backpack
+
+- Added EasyBackpackModule and EasyBackpackPatch
+- EasyBackpackPatch adds a new keybind to open the backpack UI whilst wearing it.
