@@ -28,3 +28,8 @@
 
 - Added OpenMesaModule and OpenMesaPatch
 - OpenMesaPatch makes it so that the Mesa biome is open no matter the seed.
+
+# v0.1.6 | Stashed Bugle
+
+- Added StashedBugleModule
+- StashedBugleModule adds a new keybind to toggle give / remove a Bugle.

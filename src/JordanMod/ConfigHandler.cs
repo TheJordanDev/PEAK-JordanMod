@@ -13,6 +13,9 @@ public static class ConfigHandler
     // Better Airport
     public static ConfigEntry<float> ConveyorSpeedModifier { get; private set; } = null!;
 
+    // Stashed Bugle settings
+    public static ConfigEntry<KeyCode> ToggleBugle { get; private set; } = null!;
+
     public static void Initialize(ConfigFile configFile)
     {
 		Config = configFile;
@@ -34,6 +37,14 @@ public static class ConfigHandler
                 "Conveyor Speed Modifier",
                 new AcceptableValueRange<float>(0.1f, 100f)
             )
+        );
+
+        // Stashed Bugle settings
+        ToggleBugle = Config.Bind(
+            "Control",
+            "ToggleBugle",
+            KeyCode.V,
+            new ConfigDescription("Give / destroy Bugle")
         );
 	}
 
