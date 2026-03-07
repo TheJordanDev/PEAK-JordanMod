@@ -23,3 +23,8 @@
 
 - Added BetterAirportModule
 - BetterAirportModule adds patches to make the airport more enjoyable, such as increasing the conveyor belt speed and making the terminals position at the start.
+
+# v0.1.5 | Open Mesa
+
+- Added OpenMesaModule and OpenMesaPatch
+- OpenMesaPatch makes it so that the Mesa biome is open no matter the seed.
