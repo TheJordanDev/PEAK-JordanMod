@@ -18,3 +18,8 @@
 
 - Added EasyBackpackModule and EasyBackpackPatch
 - EasyBackpackPatch adds a new keybind to open the backpack UI whilst wearing it.
+
+# v0.1.4 | Better Airport
+
+- Added BetterAirportModule
+- BetterAirportModule adds patches to make the airport more enjoyable, such as increasing the conveyor belt speed and making the terminals position at the start.

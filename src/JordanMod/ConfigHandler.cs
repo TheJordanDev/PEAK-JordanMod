@@ -10,6 +10,9 @@ public static class ConfigHandler
     // Easy Backpack
     public static ConfigEntry<KeyCode> OpenBackpack { get; private set; } = null!;
 
+    // Better Airport
+    public static ConfigEntry<float> ConveyorSpeedModifier { get; private set; } = null!;
+
     public static void Initialize(ConfigFile configFile)
     {
 		Config = configFile;
@@ -20,6 +23,17 @@ public static class ConfigHandler
             "OpenBackpack",
             KeyCode.B,
             new ConfigDescription("Open Easy Backpack UI")
+        );
+
+		// Better Airport settings
+        ConveyorSpeedModifier = Config.Bind(
+            "Conveyor",
+            "ConveyorSpeedModifier",
+            1.0f,
+            new ConfigDescription(
+                "Conveyor Speed Modifier",
+                new AcceptableValueRange<float>(0.1f, 100f)
+            )
         );
 	}
 
