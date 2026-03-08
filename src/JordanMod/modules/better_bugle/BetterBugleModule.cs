@@ -24,19 +24,6 @@ class BetterBugleModule : Module
 	public override string ModuleName => "BetterBugle";
 	public static readonly string bugleItemName = "Bugle";
 
-	public static readonly string SoundsDirectory = Path.Combine(BepInEx.Paths.BepInExRootPath, "bugleSounds");
-	public static readonly Dictionary<string, AudioType> AudioTypes = new()
-	{
-		{ "wav", AudioType.WAV },
-		{ "mp3", AudioType.MPEG },
-		{ "ogg", AudioType.OGGVORBIS },
-		{ "aiff", AudioType.AIFF },
-	};
-
-	public static bool IsLoading { get; private set; } = false;
-	public static bool IsSyncing { get; private set; } = false;
-	public static int CurrentSongIndex { get; set; } = 0;
-	public static string CurrentSongName { get; set; } = "None";
 	public static bool HadConfirmation { get; set; } = false;
 
 	public static bool IsPlaying = false;
@@ -51,9 +38,10 @@ class BetterBugleModule : Module
 	{
 		if (Instance != null) return;
 		Instance = this;
-		SceneManager.sceneLoaded += OnSceneLoaded;
 		ManageLocalizedText();
-		GetAudioClips();
+		SceneManager.sceneLoaded += OnSceneLoaded;
+		AudioSyncWorker.OnAudioLoadComplete += OnAllAudioClipsLoaded;
+		AudioSyncWorker.GetAudioClips();
 		base.Initialize();
 	}
 
@@ -61,13 +49,13 @@ class BetterBugleModule : Module
 	{
 		if (Input.GetKeyDown(ConfigHandler.SyncAudioRepository.Value))
 		{
-			Instance?.TrySyncAndLoadAudioClips();
+			AudioSyncWorker.TrySyncAndLoadAudioClips();
 		}
 		if (Input.GetKeyDown(ConfigHandler.FavoriteSongToggleKey.Value))
 		{
 			if (Character.localCharacter == null) return;
 			if (Song.Songs.Count == 0) return;
-			if (!Song.Songs.ContainsKey(CurrentSongName)) return;
+			if (!Song.Songs.ContainsKey(AudioSyncWorker.CurrentSongName)) return;
 			Character character = Character.localCharacter;
 			
 			Optionable<byte> selectedSlot = character.refs.items.currentSelectedSlot;
@@ -82,7 +70,7 @@ class BetterBugleModule : Module
 			List<string> supportedItemNames = ["Bugle", "Bugle_Magic", "Megaphone"];
 			if (!supportedItemNames.Contains(item.UIData.itemName)) return;
 			
-			Song? currentSong = Song.Songs.GetValueOrDefault(CurrentSongName);
+			Song? currentSong = Song.Songs.GetValueOrDefault(AudioSyncWorker.CurrentSongName);
 			if (currentSong == null) return;
 
 			if (Song.FavoriteSongs.Contains(currentSong.Name))
@@ -113,7 +101,7 @@ class BetterBugleModule : Module
 
 	public override void Destroy()
 	{
-		ClearAudioClips();
+		AudioSyncService.ClearAudioClips();
 		base.Destroy();
 	}
 
@@ -129,105 +117,6 @@ class BetterBugleModule : Module
 		LocalizedText.mainTable.Add("CHANGE_SONG", scrollActionLocalizations);
 	}
 
-	public void GetAudioClips()
-	{
-		if (IsLoading || IsSyncing) return;
-		if (!Directory.Exists(SoundsDirectory)) return;
-		IsLoading = true;
-		Plugin.Instance.StartCoroutine(LoadAllAudioClipsCoroutine(SoundsDirectory));
-	}
-	private void ClearAudioClips()
-	{
-		foreach (Song song in Song.Songs.Values.ToList())
-		{
-			song.Dispose();
-		}
-		Song.Sounds.Clear();
-		Song.SoundsByHash.Clear();
-		Song.Songs.Clear();
-		Song.BB_VoiceLines.Clear();
-		GC.Collect();
-	}
-	private IEnumerator LoadAllAudioClipsCoroutine(string directoryPath, string[]? forceReload = null)
-	{
-		List<(string filePath, string ext, string name)> filesToLoad = new();
-
-		foreach (var ext in AudioTypes.Keys)
-		{
-			var files = Directory.GetFiles(directoryPath, $"*.{ext}");
-			foreach (var file in files)
-			{
-				string name = Path.GetFileNameWithoutExtension(file);
-    			bool shouldForceReload = forceReload != null && forceReload.Contains($"{name}.{ext}");
-				if (!Song.Songs.ContainsKey(name) || shouldForceReload)
-				{
-					filesToLoad.Add((file, ext, name));
-				}
-			}
-		}
-
-		const int BATCH_SIZE = 2;
-		int loadedCount = 0;
-
-		for (int i = 0; i < filesToLoad.Count; i += BATCH_SIZE)
-		{
-			List<Coroutine> loadCoroutines = new();
-
-			for (int j = i; j < i + Math.Min(BATCH_SIZE, filesToLoad.Count - i) && j < filesToLoad.Count; j++)
-			{
-				var (filePath, ext, name) = filesToLoad[j];
-				bool forceReloadClip = forceReload != null && forceReload.Contains($"{name}.{ext}");
-				Coroutine loadCoroutine = Plugin.Instance.StartCoroutine(LoadAudioClipCoroutine(filePath, ext, name, forceReloadClip));
-				loadCoroutines.Add(loadCoroutine);
-			}
-
-			foreach (var coroutine in loadCoroutines) yield return coroutine;
-			loadedCount += loadCoroutines.Count;
-			BetterBugleUI.Instance?.ShowActionbar($"Loading audio clips... {loadedCount}/{filesToLoad.Count}");
-		}
-		OnAllAudioClipsLoaded();
-	}
-	private IEnumerator LoadAudioClipCoroutine(string filePath, string ext, string name, bool forceReload = false)
-	{
-
-		Debug.Log($"Loading audio clip: {name}.{ext} from {filePath}" + (forceReload ? " (forced reload)" : ""));
-
-		using UnityWebRequest www = UnityWebRequestMultimedia.GetAudioClip($"file://{filePath}", AudioTypes[ext]);
-		yield return www.SendWebRequest();
-
-		if (www.result != UnityWebRequest.Result.Success)
-		{
-			Debug.LogError($"Failed to load audio clip from {filePath}: {www.error}");
-			yield break;
-		}
-
-		bool songExists = Song.Songs.ContainsKey(name);
-
-		Debug.Log($"Audio clip '{name}' exists: {songExists}. Force reload: {forceReload}");
-
-		if (songExists && !forceReload)
-		{
-			Debug.LogWarning($"Audio clip with name '{name}' already exists. Skipping duplicate.");
-			yield break;
-		}
-
-		if (songExists && forceReload)
-		{
-			Song? previousSong = Song.Songs.TryGetValue(name, out var existingSong) ? existingSong : null;
-			previousSong?.Dispose();
-		}
-
-		AudioClip audioClip = DownloadHandlerAudioClip.GetContent(www);
-		if (audioClip == null)
-		{
-			Debug.LogError($"Failed to load audio clip from {filePath}: {www.error}");
-			yield break;
-		}
-
-		Song song = new(name, ext, filePath, audioClip);
-		song.Register();
-		Debug.Log($"Loaded audio clip: {name} from {filePath}");
-	}
 	private void OnAllAudioClipsLoaded()
 	{
 		if (Song.Songs.Count == 0) Debug.LogWarning("No songs loaded. Please ensure audio files are in the Sounds directory.");
@@ -239,86 +128,10 @@ class BetterBugleModule : Module
 			if (Song.Songs.ContainsKey(songKeyName) && !Song.FavoriteSongs.Contains(songKeyName))
 				Song.FavoriteSongs.Add(songKeyName);
 
-		if (!Song.Songs.ContainsKey(CurrentSongName))
-			CurrentSongName = Song.GetSongNames_Alphabetically()[CurrentSongIndex];
-
-		IsLoading = false;
+		if (!Song.Songs.ContainsKey(AudioSyncWorker.CurrentSongName))
+			AudioSyncWorker.CurrentSongName = Song.GetSongNames_Alphabetically()[AudioSyncWorker.CurrentSongIndex];
 	}
 
-	public void TrySyncAndLoadAudioClips()
-	{
-		if (IsLoading || IsSyncing) return;
-		Task.Run(() =>
-		{
-			SyncAndLoadAudioClipsCoroutine().GetAwaiter().GetResult();
-		});
-	}
-	private async Task SyncAndLoadAudioClipsCoroutine()
-	{
-		if (IsLoading || IsSyncing) return;
-		IsSyncing = true;
-		AudioSyncService audioSyncService = AudioSyncService.GetInstance();
-		Dictionary<AudioSyncService.APIAudioFormat, Song?> toDownload = new();
-
-		string[] existingSongNames = Song.Songs.Keys.ToArray();
-		AudioSyncService.APIAudioFormat[] existingAPIFormats = [.. audioSyncService.GetAudioClips()];
-		string[] apiExistingNames = [.. existingAPIFormats.Select(apiAudio => apiAudio.Filename)];
-
-		var songsToRemove = existingSongNames.Except(apiExistingNames).ToArray();
-		foreach (var songName in songsToRemove)
-		{
-			if (Song.Songs.TryGetValue(songName, out var songToDispose))
-			{
-				songToDispose.Dispose();
-				songToDispose.DeleteFile();
-			}
-		}
-
-
-		foreach (AudioSyncService.APIAudioFormat apiAudio in existingAPIFormats)
-		{
-			Song? existingSong = Song.SoundsByHash.GetValueOrDefault(apiAudio.Hash);
-			if (existingSong == null || existingSong.Hash != apiAudio.Hash)
-			{
-				toDownload.Add(apiAudio, existingSong);
-			}
-		}
-
-		BetterBugleUI.Instance?.ShowActionbar($"Syncing audio bank... {toDownload.Count} changed/new files found.");
-
-		string[] filesToOverload = [];
-
-		foreach (AudioSyncService.APIAudioFormat apiAudio in toDownload.Keys)
-		{
-			bool success = await DownloadAPIAudio(apiAudio, toDownload[apiAudio]);
-			if (success)
-			{
-				Debug.Log($"Successfully downloaded audio: {apiAudio.Filename}.{apiAudio.Extension}, adding to forceload");
-				filesToOverload = [.. filesToOverload, $"{apiAudio.Filename}.{apiAudio.Extension}"];
-			}
-		}
-		IsSyncing = false;
-		IsLoading = true;
-		Plugin.Instance.StartCoroutine(LoadAllAudioClipsCoroutine(SoundsDirectory, filesToOverload));
-	}
-	private async Task<bool> DownloadAPIAudio(AudioSyncService.APIAudioFormat apiAudio, Song? existingSong = null)
-	{
-		bool success = true;
-		try
-		{
-			if (existingSong != null && apiAudio.Filename != existingSong.Name)
-			{
-				File.Delete(Path.Combine(SoundsDirectory, $"{existingSong.Name}.{existingSong.Extension}"));
-			}
-			await apiAudio.DownloadToFolder(SoundsDirectory);
-		}
-		catch (Exception ex)
-		{
-			Debug.LogError($"Failed to download API audio: {ex.Message}");
-			success = false;
-		}
-		return success;
-	}
 }
 
 public class BetterBugleSFX : MonoBehaviourPun
@@ -347,7 +160,7 @@ public class BetterBugleSFX : MonoBehaviourPun
 		audioSource.volume = 0f;
 		audioSource.loop = true;
 		if (IsLocal()) BetterBugleModule.CurrentAudioSource = audioSource;
-		song = Song.Songs.GetValueOrDefault(BetterBugleModule.CurrentSongName);
+		song = Song.Songs.GetValueOrDefault(AudioSyncWorker.CurrentSongName);
 	}
 
 	private bool IsLocal()
@@ -393,7 +206,7 @@ public class BetterBugleSFX : MonoBehaviourPun
 
 		if (flag != hold)
 		{
-			if (flag) photonView.RPC("RPC_StartBetterToot", RpcTarget.All, BetterBugleModule.CurrentSongName);
+			if (flag) photonView.RPC("RPC_StartBetterToot", RpcTarget.All, AudioSyncWorker.CurrentSongName);
 			else photonView.RPC("RPC_StopBetterToot", RpcTarget.All);
 			hold = flag;
 		}
@@ -526,7 +339,7 @@ public class BetterBugleUI : MonoBehaviour
 	{
 		if (customStyle == null) return;
 		if (BetterBugleModule.CurrentAudioSource == null || !BetterBugleModule.IsPlaying) return;
-		Song? currentAudio = Song.Songs.FirstOrDefault(s => s.Value.Name == BetterBugleModule.CurrentSongName).Value;
+		Song? currentAudio = Song.Songs.FirstOrDefault(s => s.Value.Name == AudioSyncWorker.CurrentSongName).Value;
 		if (currentAudio == null || BetterBugleModule.CurrentAudioSource.clip == null) return;
 
 		float MAX_WIDTH = Screen.width - (offsetX * 2);

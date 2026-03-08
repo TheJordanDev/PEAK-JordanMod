@@ -45,7 +45,7 @@ public class BetterBuglePatch
 		// 	BetterBugleUI.Instance?.ShowActionbar("No songs available.");
 		// 	return;
 		// }
-		if (BetterBugleModule.IsLoading) return;
+		if (AudioSyncWorker.IsLoading) return;
 		if (!BetterBugleModule.HadConfirmation)
 		{
 			BetterBugleUI.Instance?.ShowActionbar("Are you sure you want to refresh songs ? Right-click again to reload.");
@@ -57,7 +57,7 @@ public class BetterBuglePatch
 		{
 			BetterBugleModule.HadConfirmation = false; // Reset confirmation state
 			BetterBugleUI.Instance?.ShowActionbar("Refreshing songs...");
-			BetterBugleModule.Instance?.GetAudioClips();
+			AudioSyncService.GetAudioClips();
 		}
 
 	}
@@ -72,7 +72,7 @@ public class BetterBuglePatch
 
 	private static void OnScroll(float scrollDelta)
 	{
-		if (BetterBugleModule.IsLoading) return;
+		if (AudioSyncWorker.IsLoading) return;
 		bool isNext = scrollDelta > 0;
 		if (Song.Songs.Count == 0)
 		{
@@ -80,15 +80,15 @@ public class BetterBuglePatch
 			return;
 		}
 
-		if (isNext && BetterBugleModule.CurrentSongIndex < Song.Songs.Count - 1) BetterBugleModule.CurrentSongIndex++;
-		else if (isNext && BetterBugleModule.CurrentSongIndex == Song.Songs.Count - 1) BetterBugleModule.CurrentSongIndex = 0;
-		else if (!isNext && BetterBugleModule.CurrentSongIndex > 0) BetterBugleModule.CurrentSongIndex--;
-		else BetterBugleModule.CurrentSongIndex = Song.Songs.Count - 1;
-		BetterBugleModule.CurrentSongName = Song.GetSongNames_Alphabetically()[BetterBugleModule.CurrentSongIndex];
+		if (isNext && AudioSyncWorker.CurrentSongIndex < Song.Songs.Count - 1) AudioSyncWorker.CurrentSongIndex++;
+		else if (isNext && AudioSyncWorker.CurrentSongIndex == Song.Songs.Count - 1) AudioSyncWorker.CurrentSongIndex = 0;
+		else if (!isNext && AudioSyncWorker.CurrentSongIndex > 0) AudioSyncWorker.CurrentSongIndex--;
+		else AudioSyncWorker.CurrentSongIndex = Song.Songs.Count - 1;
+		AudioSyncWorker.CurrentSongName = Song.GetSongNames_Alphabetically()[AudioSyncWorker.CurrentSongIndex];
 
-		Song currentSong = Song.Songs[BetterBugleModule.CurrentSongName];
+		Song currentSong = Song.Songs[AudioSyncWorker.CurrentSongName];
 
-		bool isFavorite = Song.FavoriteSongs.Contains(BetterBugleModule.CurrentSongName);
+		bool isFavorite = Song.FavoriteSongs.Contains(AudioSyncWorker.CurrentSongName);
 		BetterBugleUI.Instance?.ShowActionbar($" {(isFavorite ? "★" : " ")} {currentSong.RealIndex} | {currentSong.Name.Replace("_", " ")}");
 	}
 
@@ -104,10 +104,10 @@ public class BetterBuglePatch
 			if (currentItem.itemState != ItemState.Held) return;
 			if (currentItem.TryGetComponent<BugleSFX>(out var bugleSFX))
 			{
-				Song? song = Song.Songs.GetValueOrDefault(BetterBugleModule.CurrentSongName);
+				Song? song = Song.Songs.GetValueOrDefault(AudioSyncWorker.CurrentSongName);
 				if (song == null) return;
 
-				bool isFavorite = Song.FavoriteSongs.Contains(BetterBugleModule.CurrentSongName);
+				bool isFavorite = Song.FavoriteSongs.Contains(AudioSyncWorker.CurrentSongName);
 				BetterBugleUI.Instance?.ShowActionbar($"{(isFavorite ? "★" : " ")} {song.RealIndex} | {song.Name}");
 			}
 		};

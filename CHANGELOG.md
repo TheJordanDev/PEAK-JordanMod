@@ -42,3 +42,8 @@
 # v0.1.8 | Changed dependencies
 
 - Added ModConfig and PeakPresence (my mod), Updated BepInEx
+
+# v0.1.9 | AudioSyncWorker & Dynamic BingBong voices
+
+- Centralized Audio loading in Worker class
+- Now load BingBong voicelines dynamically after Sound reloads.
