@@ -4,15 +4,15 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using Zorro.Core;
 
-namespace AncestralMod;
+namespace JordanMod;
 
 public static class Helper
 {
-	private static ItemDatabase Database => SingletonAsset<ItemDatabase>.Instance;
+	public static ItemDatabase ItemDatabase { get; private set; } = SingletonAsset<ItemDatabase>.Instance;
 
 	public static Item FindItemByName(string itemName, out Item? item)
 	{
-		item = Database.Objects.Find(item => item.name.Equals(itemName, System.StringComparison.OrdinalIgnoreCase));
+		item = ItemDatabase.Objects.Find(item => item.name.Equals(itemName, System.StringComparison.OrdinalIgnoreCase));
 		return item;
 	}
 

@@ -1,4 +1,3 @@
-using AncestralMod;
 using HarmonyLib;
 using Photon.Pun;
 using UnityEngine;
