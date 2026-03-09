@@ -47,3 +47,7 @@
 
 - Centralized Audio loading in Worker class
 - Now load BingBong voicelines dynamically after Sound reloads.
+
+# v0.1.10 | Bonkable items
+
+- Added Bonkable component to items when thrown.

@@ -135,6 +135,7 @@ public class BingBongResponseData
 
     public static BingBongResponseData FromBingBongResponse(Action_AskBingBong.BingBongResponse response)
     {
+		Debug.Log($"Creating BingBongResponseData from response with SFX name: {response.sfx.name}, subtitleID: {response.subtitleID}");
         return new BingBongResponseData
         {
             Clips = (AudioClip[])response.sfx.clips.Clone(),

@@ -9,14 +9,6 @@ namespace JordanMod.Modules.ReplaceBingBong;
 public class ReplaceBingBongPatch
 {
 
-	[HarmonyPatch(typeof(Item), "Start")]
-	[HarmonyPrefix]
-	static void OnItemStart(Item __instance)
-	{
-		if (__instance.name != "BingBong_Prop Variant") return;
-		Debug.Log($"Item {__instance.name} Start in scene {__instance.gameObject.scene.name} ({__instance.gameObject.scene.buildIndex})");
-	}
-
 	[HarmonyPatch(typeof(ItemActionBase), "OnEnable")]
 	[HarmonyPrefix]
 	static bool PreActionAskBingBongConstructorFix(ItemActionBase __instance)
