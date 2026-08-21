@@ -16,6 +16,12 @@ public partial class Plugin : BaseUnityPlugin
     private static Harmony? _harmony;
     private ModuleManager? _moduleManager;
 
+    private static readonly System.Collections.Concurrent.ConcurrentQueue<Action> _mainThreadQueue = new();
+
+    // Unity APIs (e.g. StartCoroutine) can only be called from the main thread;
+    // background work (Task.Run, etc.) must hop back through here to touch them.
+    public static void RunOnMainThread(Action action) => _mainThreadQueue.Enqueue(action);
+
     private static readonly List<Type> _globalPatches = [
         typeof(Patches.PassportPatch),
     ];
@@ -84,6 +90,11 @@ public partial class Plugin : BaseUnityPlugin
 
     private void Update()
     {
+        while (_mainThreadQueue.TryDequeue(out Action? action))
+        {
+            try { action(); }
+            catch (Exception e) { Log.LogError($"Main thread action failed: {e}"); }
+        }
         _moduleManager?.Update();
     }
 

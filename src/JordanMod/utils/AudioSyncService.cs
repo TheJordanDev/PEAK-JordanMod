@@ -115,7 +115,7 @@ class AudioSyncService
 			if (File.Exists(filePath)) File.Delete(filePath);
 
 			string url = $"{API_BASE_URL}/audio/{Id}/download?hash={Hash}";
-			Debug.LogError($"Downloading audio from URL: {url}");
+			Debug.Log($"Downloading audio from URL: {url}");
 
 			using UnityWebRequest www = UnityWebRequest.Get(url);
 			var operation = www.SendWebRequest();
@@ -244,48 +244,58 @@ class AudioSyncWorker
 	{
 		if (IsLoading || IsSyncing) return;
 		IsSyncing = true;
-		Dictionary<AudioSyncService.APIAudioFormat, Song?> toDownload = new();
-
-		string[] existingSongNames = [.. Song.Sounds.Keys];
-		AudioSyncService.APIAudioFormat[] existingAPIFormats = [.. AudioSyncService.GetAudioClips()];
-		string[] apiExistingNames = [.. existingAPIFormats.Select(apiAudio => apiAudio.Filename)];
-
-		var songsToRemove = existingSongNames.Except(apiExistingNames).ToArray();
-		foreach (var songName in songsToRemove)
+		try
 		{
-			if (Song.Sounds.TryGetValue(songName, out var songToDispose))
+			Dictionary<AudioSyncService.APIAudioFormat, Song?> toDownload = new();
+
+			string[] existingSongNames = [.. Song.Sounds.Keys];
+			AudioSyncService.APIAudioFormat[] existingAPIFormats = [.. AudioSyncService.GetAudioClips()];
+			string[] apiExistingNames = [.. existingAPIFormats.Select(apiAudio => apiAudio.Filename)];
+
+			var songsToRemove = existingSongNames.Except(apiExistingNames).ToArray();
+			foreach (var songName in songsToRemove)
 			{
-				songToDispose.Dispose();
-				songToDispose.DeleteFile();
+				if (Song.Sounds.TryGetValue(songName, out var songToDispose))
+				{
+					songToDispose.Dispose();
+					songToDispose.DeleteFile();
+				}
 			}
+
+
+			foreach (AudioSyncService.APIAudioFormat apiAudio in existingAPIFormats)
+			{
+				Song? existingSong = Song.SoundsByHash.GetValueOrDefault(apiAudio.Hash);
+				if (existingSong == null || existingSong.Hash != apiAudio.Hash)
+				{
+					toDownload.Add(apiAudio, existingSong);
+				}
+			}
+
+			BetterBugleUI.Instance?.ShowActionbar($"Syncing audio bank... {toDownload.Count} changed/new files found.");
+
+			string[] filesToOverload = [];
+
+			foreach (AudioSyncService.APIAudioFormat apiAudio in toDownload.Keys)
+			{
+				bool success = await AudioSyncService.DownloadAPIAudio(apiAudio, SoundsDirectory, toDownload[apiAudio]);
+				if (success)
+				{
+					Debug.Log($"Successfully downloaded audio: {apiAudio.Filename}.{apiAudio.Extension}, adding to forceload");
+					filesToOverload = [.. filesToOverload, $"{apiAudio.Filename}.{apiAudio.Extension}"];
+				}
+			}
+			IsSyncing = false;
+			IsLoading = true;
+			// StartCoroutine is a Unity API - must run on the main thread, not on this Task.Run background thread.
+			Plugin.RunOnMainThread(() => Plugin.Instance.StartCoroutine(LoadAllAudioClipsCoroutine(SoundsDirectory, filesToOverload)));
 		}
-
-
-		foreach (AudioSyncService.APIAudioFormat apiAudio in existingAPIFormats)
+		catch (Exception ex)
 		{
-			Song? existingSong = Song.SoundsByHash.GetValueOrDefault(apiAudio.Hash);
-			if (existingSong == null || existingSong.Hash != apiAudio.Hash)
-			{
-				toDownload.Add(apiAudio, existingSong);
-			}
+			Debug.LogError($"Audio sync failed: {ex}");
+			IsSyncing = false;
+			IsLoading = false;
 		}
-
-		BetterBugleUI.Instance?.ShowActionbar($"Syncing audio bank... {toDownload.Count} changed/new files found.");
-
-		string[] filesToOverload = [];
-
-		foreach (AudioSyncService.APIAudioFormat apiAudio in toDownload.Keys)
-		{
-			bool success = await AudioSyncService.DownloadAPIAudio(apiAudio, SoundsDirectory, toDownload[apiAudio]);
-			if (success)
-			{
-				Debug.Log($"Successfully downloaded audio: {apiAudio.Filename}.{apiAudio.Extension}, adding to forceload");
-				filesToOverload = [.. filesToOverload, $"{apiAudio.Filename}.{apiAudio.Extension}"];
-			}
-		}
-		IsSyncing = false;
-		IsLoading = true;
-		Plugin.Instance.StartCoroutine(LoadAllAudioClipsCoroutine(SoundsDirectory, filesToOverload));
 	}
 }
 

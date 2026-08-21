@@ -45,7 +45,7 @@ public class BetterBuglePatch
 		// 	BetterBugleUI.Instance?.ShowActionbar("No songs available.");
 		// 	return;
 		// }
-		if (AudioSyncWorker.IsLoading) return;
+		if (AudioSyncWorker.IsLoading || AudioSyncWorker.IsSyncing) return;
 		if (!BetterBugleModule.HadConfirmation)
 		{
 			BetterBugleUI.Instance?.ShowActionbar("Are you sure you want to refresh songs ? Right-click again to reload.");
@@ -57,15 +57,18 @@ public class BetterBuglePatch
 		{
 			BetterBugleModule.HadConfirmation = false; // Reset confirmation state
 			BetterBugleUI.Instance?.ShowActionbar("Refreshing songs...");
-			AudioSyncService.GetAudioClips();
+			// Refresh = unload everything and reload from local files only (no network).
+			// For downloading from the audio bank API, use the Sync keybind instead.
+			AudioSyncService.ClearAudioClips();
+			AudioSyncWorker.GetAudioClips();
 		}
 
 	}
 
 	private static IEnumerator ResetConfirmation()
 	{
-		if (!BetterBugleModule.HadConfirmation) yield break;
 		yield return new WaitForSeconds(2f);
+		if (!BetterBugleModule.HadConfirmation) yield break; // already confirmed (or reset) in the meantime
 		BetterBugleUI.Instance?.ShowActionbar("No answer, not refreshing songs.");
 		BetterBugleModule.HadConfirmation = false;
 	}

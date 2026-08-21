@@ -9,6 +9,12 @@ class EasyBackpackPatch
 	[HarmonyPrefix]
 	static bool BackpackWheelUpdatePrefix(BackpackWheel __instance)
 	{
+		if (!__instance.backpack.exists || __instance.backpack.locationTransform == null)
+		{
+			GUIManager.instance.CloseBackpackWheel();
+			return false;
+		}
+
 		bool isBackPackOpen = EasyBackpackModule.Instance?._isBackpackOpen ?? false;
 
 		if (!Character.localCharacter.input.interactIsPressed && !isBackPackOpen)
@@ -18,13 +24,17 @@ class EasyBackpackPatch
 			return false;
 		}
 
-		if (__instance.backpack.locationTransform != null && Vector3.Distance(__instance.backpack.locationTransform.position, Character.localCharacter.Center) > 6f)
+		if (Vector3.Distance(__instance.backpack.locationTransform.position, Character.localCharacter.Center) > 6f)
 		{
 			GUIManager.instance.CloseBackpackWheel();
 			return false;
 		}
 
-		if (__instance.chosenSlice.IsSome && !__instance.chosenSlice.Value.isBackpackWear && !__instance.slices[__instance.chosenSlice.Value.slotID + 1].image.enabled)
+		if (__instance.chosenSlice.IsSome && __instance.chosenSlice.Value.isJetpackFuelSlice)
+		{
+			__instance.currentlyHeldItem.transform.position = Vector3.Lerp(__instance.currentlyHeldItem.transform.position, __instance.jetpackSlice.transform.GetChild(0).GetChild(0).position, Time.deltaTime * 20f);
+		}
+		else if (__instance.chosenSlice.IsSome && !__instance.chosenSlice.Value.isBackpackWear && !__instance.slices[__instance.chosenSlice.Value.slotID + 1].image.enabled)
 		{
 			__instance.currentlyHeldItem.transform.position = Vector3.Lerp(__instance.currentlyHeldItem.transform.position, __instance.slices[__instance.chosenSlice.Value.slotID + 1].transform.GetChild(0).GetChild(0).position, Time.deltaTime * 20f);
 		}
@@ -32,7 +42,7 @@ class EasyBackpackPatch
 		{
 			__instance.currentlyHeldItem.transform.localPosition = Vector3.Lerp(__instance.currentlyHeldItem.transform.localPosition, Vector3.zero, Time.deltaTime * 20f);
 		}
-		return false; 
+		return false;
 	}
 
 }

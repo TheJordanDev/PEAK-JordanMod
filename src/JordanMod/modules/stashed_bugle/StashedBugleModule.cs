@@ -35,7 +35,7 @@ class StashedBugleModule : Module
 				localCharacter.player.EmptySlot(localCharacter.refs.items.currentSelectedSlot);
 				localCharacter.player.RPCRemoveItemFromSlot(localCharacter.refs.items.currentSelectedSlot.Value);
 
-				localCharacter.refs.items.SpawnItemInHand(_megaphoneItemName);
+				SpawnItemByDisplayName(localCharacter, _megaphoneItemName);
 			}
 			else if (heldItem.UIData.itemName == _megaphoneItemName)
 			{
@@ -54,8 +54,22 @@ class StashedBugleModule : Module
 				withBugleSlot = itemSlot;
 				break;
 			}
-			if (withBugleSlot == null) localCharacter.refs.items.SpawnItemInHand(_bugleItemName);
+			if (withBugleSlot == null) SpawnItemByDisplayName(localCharacter, _bugleItemName);
 			else localCharacter.refs.items.EquipSlot(Optionable<byte>.Some(withBugleSlot.itemSlotID));
 		}
+	}
+
+	// SpawnItemInHand expects the item's Resources prefab name, which is not
+	// guaranteed to match its UIData.itemName display string, so resolve it
+	// via the ItemDatabase instead of assuming the two are identical.
+	private static void SpawnItemByDisplayName(Character character, string displayName)
+	{
+		Item? match = Helper.ItemDatabase.Objects.Find(item => item.UIData != null && item.UIData.itemName == displayName);
+		if (match == null)
+		{
+			Debug.LogWarning($"[StashedBugle] Could not find an item with UIData.itemName '{displayName}' in ItemDatabase.");
+			return;
+		}
+		character.refs.items.SpawnItemInHand(match.name);
 	}
 }

@@ -38,16 +38,25 @@ class EasyBackpackModule : Module
 		Character localCharacter = Character.localCharacter;
 		if (localCharacter == null) return;
 
-		bool hasBackpack = localCharacter.player.backpackSlot.hasBackpack;
 		Character carriedCharacter = localCharacter.data.carriedPlayer;
-		bool carriedHasBackpack = carriedCharacter != null && carriedCharacter.player.backpackSlot.hasBackpack;
 
-		BackpackReference backpackRefs;
-		if (hasBackpack) backpackRefs = BackpackReference.GetFromEquippedBackpack(localCharacter);
-		else if (carriedHasBackpack) backpackRefs = BackpackReference.GetFromEquippedBackpack(carriedCharacter);
+		Character targetCharacter;
+		BackpackSlot targetSlot;
+		if (localCharacter.player.backpackSlot.backpackType != BackpackSlot.BackpackType.None)
+		{
+			targetCharacter = localCharacter;
+			targetSlot = localCharacter.player.backpackSlot;
+		}
+		else if (carriedCharacter != null && carriedCharacter.player.backpackSlot.backpackType != BackpackSlot.BackpackType.None)
+		{
+			targetCharacter = carriedCharacter;
+			targetSlot = carriedCharacter.player.backpackSlot;
+		}
 		else return;
 
-		GUIManager.instance.OpenBackpackWheel(backpackRefs);
+		BackpackReference backpackRefs = BackpackReference.GetFromEquippedBackpack(targetCharacter);
+		int slotCount = (targetSlot.prefab as Backpack)?.slotCount ?? 4;
+		GUIManager.instance.OpenBackpackWheel(backpackRefs, slotCount, targetSlot.backpackType);
 		_isBackpackOpen = true;
 	}
 

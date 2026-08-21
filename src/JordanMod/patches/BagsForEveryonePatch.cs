@@ -24,7 +24,7 @@ public class BagsForEveryonePatch
 		bool isFirstSpawner = spawner.transform.IsChildOf(GameObject.Find("Biome_1").transform);
 		if (!isFirstSpawner) return;
 
-		int playerCount = PhotonNetwork.PlayerList.Length - 1;
+		int playerCount = PhotonNetwork.PlayerList.Length - 1; // Already one bag
 		if (playerCount <= 0) return;
 		for (int i = 1; i <= playerCount; i++)
 		{
