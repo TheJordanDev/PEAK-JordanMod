@@ -66,3 +66,13 @@
 
 - Open the passport when pressing the "Open Passport" keybind (default: P)
 - Removed a leftover debug keybind on the BingBong module that was also bound to P and would have fired alongside the new passport keybind.
+
+# v0.1.13 | Fix for PEAK update
+
+- Rebuilt against the September PEAK update. Two game methods gained an optional parameter, which compiles fine but leaves an older build calling a signature that no longer exists, so both threw a MissingMethodException at runtime:
+  - `Player.EmptySlot(slot)` became `EmptySlot(slot, bool andBroadcast = true)`. This killed the whole "Toggle Bugle" keybind (default: V) — both giving the Bugle and swapping it for the Megaphone.
+  - `PhotonNetwork.InstantiateItemRoom(name, position, rotation)` gained a fourth `bool warnIfNotHost = true`. This one threw inside the Bags for Everyone postfix on `SingleItemSpawner.TrySpawnItems`, and because a throwing postfix propagates out of the method it patched, it took down every `SingleItemSpawner` in the level rather than just the backpack one. Backpacks and BingBong stopped spawning, and lighting a campfire no longer advanced the biome: the spawn loop runs inside `MapHandler`'s transition coroutine, so the throw killed that coroutine and the campfire items, day/night blend, biome title and fog reveal all silently never happened.
+- Removed the manual `RPCRemoveItemFromSlot` call the Bugle keybind made right after `EmptySlot`. `EmptySlot` already forwards the removal to the host itself, so the extra call only logged "Only Master Client can remove items!" on every press for anyone who wasn't hosting.
+- The "Open Backpack" keybind (default: B) no longer opens the wheel while the backpack is held in your hands. The wheel pulls items out of the backpack's on-back visuals, which the game deactivates while the backpack is in hand, so anything taken out was spawned into a disabled rig and disappeared. Hold-interacting the held backpack still opens it the normal way.
+- Hardened the Bags for Everyone patch. Its master-client and spawner-name checks now run in the postfix itself instead of inside the method that spawns the bags, and the spawn is wrapped in a try/catch. Because Mono resolves a method's call targets when it JITs that method, a changed game API used to throw before any of those checks could run, taking down every `SingleItemSpawner` in the level — which is what stopped campfires from advancing the biome in 0.1.12. A failure now costs the extra bags and nothing else.
+- The extra backpacks are registered with the spawner's `SpawnedItemTracker`, so a quicksave records them instead of restoring only the vanilla one, and the patch no longer adds a fresh batch on top every time a run is loaded from a save.

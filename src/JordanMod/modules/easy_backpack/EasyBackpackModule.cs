@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using Zorro.Core;
 
 namespace JordanMod.Modules.EasyBackpack;
 
@@ -54,10 +55,24 @@ class EasyBackpackModule : Module
 		}
 		else return;
 
+		// The wheel we open is the one for the backpack worn on the target's back, and its
+		// on-back visuals are what BackpackWheel.Choose() pulls items out of. While the
+		// backpack is held in hand (its slot, ID 3, is the equipped one) CharacterBackpackHandler
+		// deactivates those visuals, so anything taken out of the wheel is spawned into a
+		// disabled rig and vanishes. Refuse to open in that state; the game's own
+		// hold-interact on the held backpack still works and opens the correct wheel.
+		if (IsBackpackInHands(targetCharacter)) return;
+
 		BackpackReference backpackRefs = BackpackReference.GetFromEquippedBackpack(targetCharacter);
 		int slotCount = (targetSlot.prefab as Backpack)?.slotCount ?? 4;
 		GUIManager.instance.OpenBackpackWheel(backpackRefs, slotCount, targetSlot.backpackType);
 		_isBackpackOpen = true;
+	}
+
+	private static bool IsBackpackInHands(Character character)
+	{
+		Optionable<byte> selectedSlot = character.refs.items.currentSelectedSlot;
+		return selectedSlot.IsSome && selectedSlot.Value == character.player.backpackSlot.itemSlotID;
 	}
 
 	private void CloseBackpack()

@@ -31,17 +31,12 @@ class StashedBugleModule : Module
 		{
 			if (heldItem.UIData.itemName == _bugleItemName)
 			{
-				localCharacter.refs.items.DestroyHeldItemRpc();
-				localCharacter.player.EmptySlot(localCharacter.refs.items.currentSelectedSlot);
-				localCharacter.player.RPCRemoveItemFromSlot(localCharacter.refs.items.currentSelectedSlot.Value);
-
+				ClearHeldSlot(localCharacter);
 				SpawnItemByDisplayName(localCharacter, _megaphoneItemName);
 			}
 			else if (heldItem.UIData.itemName == _megaphoneItemName)
 			{
-				localCharacter.refs.items.DestroyHeldItemRpc();
-				localCharacter.player.EmptySlot(localCharacter.refs.items.currentSelectedSlot);
-				localCharacter.player.RPCRemoveItemFromSlot(localCharacter.refs.items.currentSelectedSlot.Value);
+				ClearHeldSlot(localCharacter);
 			}
 		}
 		else if (heldItem == null)
@@ -57,6 +52,16 @@ class StashedBugleModule : Module
 			if (withBugleSlot == null) SpawnItemByDisplayName(localCharacter, _bugleItemName);
 			else localCharacter.refs.items.EquipSlot(Optionable<byte>.Some(withBugleSlot.itemSlotID));
 		}
+	}
+
+	// Player.EmptySlot already tells the host to clear the slot (it RPCs
+	// RPCRemoveItemFromSlot to the master client when we aren't the host), so calling
+	// RPCRemoveItemFromSlot ourselves on top of it only logged "Only Master Client can
+	// remove items!" on every non-host press.
+	private static void ClearHeldSlot(Character character)
+	{
+		character.refs.items.DestroyHeldItemRpc();
+		character.player.EmptySlot(character.refs.items.currentSelectedSlot);
 	}
 
 	// SpawnItemInHand expects the item's Resources prefab name, which is not
