@@ -27,17 +27,6 @@ class ReplaceBingBongModule : Module
 		AudioSyncWorker.OnAudioLoadComplete += OnAudioLoadComplete;
 	}
 
-	public override void Update()
-	{
-		base.Update();
-		if (Input.GetKeyDown(KeyCode.P))
-		{
-			Helper.FindItemByName("BingBong_Prop Variant", out Item? item);
-			if (item == null) return;
-			Debug.Log($"Found item: {item.name} in scene {item.gameObject.scene.name}");
-		}
-	}
-
 	private static void OnAudioLoadComplete()
 	{
 		if (!HasReplacedSounds) return;

@@ -13,6 +13,9 @@ public static class ConfigHandler
     // Better Airport
     public static ConfigEntry<float> ConveyorSpeedModifier { get; private set; } = null!;
 
+    // Open Passport settings
+    public static ConfigEntry<KeyCode> OpenPassport { get; private set; } = null!;
+
     // Stashed Bugle settings
     public static ConfigEntry<KeyCode> ToggleBugle { get; private set; } = null!;
 
@@ -47,6 +50,14 @@ public static class ConfigHandler
                 "Conveyor Speed Modifier",
                 new AcceptableValueRange<float>(0.1f, 100f)
             )
+        );
+
+        // Open Passport settings
+        OpenPassport = Config.Bind(
+            "Key Bindings",
+            "OpenPassport",
+            KeyCode.P,
+            new ConfigDescription("Open Passport UI")
         );
 
         // Stashed Bugle settings

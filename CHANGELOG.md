@@ -62,3 +62,7 @@
 - Fixed the right-click confirmation always showing "No answer, not refreshing songs" even after successfully confirming, due to a timing check that ran before the confirmation window instead of after.
 - Fixed an error (NullReferenceException) every time a thrown item bonked something: `Bonkable` added at runtime has no serialized prefab data, so its sound-effect array was `null` instead of empty. It now defaults to an empty array so bonks still ragdoll/knock back the target, just silently.
 
+# v0.1.12 | Added customization keybinds
+
+- Open the passport when pressing the "Open Passport" keybind (default: P)
+- Removed a leftover debug keybind on the BingBong module that was also bound to P and would have fired alongside the new passport keybind.
