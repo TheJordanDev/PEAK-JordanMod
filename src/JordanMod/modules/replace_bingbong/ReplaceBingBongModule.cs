@@ -12,6 +12,8 @@ class ReplaceBingBongModule : Module
 {
 	public override string ModuleName => "Replace BingBong Module";
 
+	public const string BingBongSubtitleID = "IDK_FUNNY";
+
 	public static bool HasReplacedSounds = false;
 	public static BingBongResponseData[] OriginalResponsesData = [];
     
@@ -23,28 +25,70 @@ class ReplaceBingBongModule : Module
     public override void Initialize()
 	{
 		base.Initialize();
-		LocalizedText.mainTable.Add("idk_funny", ["Test subtitle!"]);
+		// LocalizedText.GetText upper-cases the id before looking it up, so a lowercase key never
+		// resolved at all. It also indexes the list by CURRENT_LANGUAGE, so a single-entry list
+		// threw IndexOutOfRange (caught and logged by GetText) for every non-English player.
+		List<string> subtitleLocalizations = new(LocalizedText.LANGUAGE_COUNT);
+		for (int i = 0; i < LocalizedText.LANGUAGE_COUNT; i++) subtitleLocalizations.Add("Test subtitle!");
+		LocalizedText.mainTable[BingBongSubtitleID] = subtitleLocalizations;
 		AudioSyncWorker.OnAudioLoadComplete += OnAudioLoadComplete;
 	}
 
 	private static void OnAudioLoadComplete()
 	{
 		if (!HasReplacedSounds) return;
-		Action_AskBingBong[] allBingBongActions = UnityEngine.Object.FindObjectsByType<Action_AskBingBong>(FindObjectsSortMode.None);
-		foreach (Action_AskBingBong askBingBong in allBingBongActions) {
-			ReplaceBingBongResponses(askBingBong);
+		RebuildResponsesForAll();
+	}
+
+	// Build the new set and hand it to every live instance before destroying the old one, so no
+	// Action_AskBingBong is ever left pointing at a destroyed SFX_Instance.
+	private static void RebuildResponsesForAll()
+	{
+		Action_AskBingBong.BingBongResponse[]? previous = _cachedResponses;
+		_cachedResponses = BuildResponses();
+
+		foreach (Action_AskBingBong askBingBong in UnityEngine.Object.FindObjectsByType<Action_AskBingBong>(FindObjectsSortMode.None))
+		{
+			askBingBong.responses = _cachedResponses;
+		}
+
+		if (previous == null) return;
+		foreach (Action_AskBingBong.BingBongResponse response in previous)
+		{
+			if (response.sfx != null) UnityEngine.Object.Destroy(response.sfx);
 		}
 	}
 
+	// SFX_Instance derives from ScriptableObject, which cannot be constructed with `new` --
+	// doing so skips Unity's native-side init, so the object misbehaves and its overloaded
+	// == null check reports oddly. CreateInstance is the only correct way to make one.
+	public static SFX_Instance CreateSFX(string name, AudioClip[] clips)
+	{
+		SFX_Instance instance = ScriptableObject.CreateInstance<SFX_Instance>();
+		instance.name = name;
+		instance.clips = clips;
+		return instance;
+	}
+
+	// Every Action_AskBingBong ends up with the same set -- it is derived purely from static
+	// state (OriginalResponsesData plus the loaded voice lines). This used to be rebuilt on every
+	// OnEnable, allocating a fresh SFX_Instance per response each time and never destroying the
+	// previous ones, so BingBong items cycling in and out of scope leaked steadily.
 	public static void ReplaceBingBongResponses(Action_AskBingBong askBingBong)
+	{
+		_cachedResponses ??= BuildResponses();
+		askBingBong.responses = _cachedResponses;
+	}
+
+	private static Action_AskBingBong.BingBongResponse[]? _cachedResponses;
+
+	private static Action_AskBingBong.BingBongResponse[] BuildResponses()
 	{
 		Action_AskBingBong.BingBongResponse[] currentResponses = new Action_AskBingBong.BingBongResponse[OriginalResponsesData.Length];
 		for (int index = 0; index < OriginalResponsesData.Length; index++)
 		{
 			currentResponses[index] = OriginalResponsesData[index].ToBingBongResponse();
 		}
-
-		askBingBong.responses = [];
 
 		Dictionary<string, SFX_Instance> sfxDict = new();
 		for (int i = 0; i < currentResponses.Length; i++)
@@ -68,14 +112,10 @@ class ReplaceBingBongModule : Module
 			bool isNew = !sfxDict.ContainsKey(voice.Name);
 			if (isNew)
 			{
-				SFX_Instance sFX_Instance = new()
-				{
-					clips = [clip]
-				};
 				Action_AskBingBong.BingBongResponse newResponse = new()
 				{
-					sfx = sFX_Instance,
-					subtitleID = "idk_funny",
+					sfx = CreateSFX(voice.Name, [clip]),
+					subtitleID = BingBongSubtitleID,
 					mouthCurve = null,
 					mouthCurveTime = 1f
 				};
@@ -87,11 +127,7 @@ class ReplaceBingBongModule : Module
 			}
 		}
 
-		askBingBong.responses = new Action_AskBingBong.BingBongResponse[currentResponses.Length];
-		for (int i = 0; i < currentResponses.Length; i++)
-		{
-			askBingBong.responses[i] = currentResponses[i];
-		}
+		return currentResponses;
 	}
 
 
@@ -111,11 +147,7 @@ public class BingBongResponseData
     {
         return new Action_AskBingBong.BingBongResponse
         {
-            sfx = new SFX_Instance
-            {
-                name = SfxName,
-                clips = (AudioClip[])Clips.Clone()
-            },
+            sfx = ReplaceBingBongModule.CreateSFX(SfxName, (AudioClip[])Clips.Clone()),
             subtitleID = SubtitleID,
             mouthCurve = MouthCurve,
             mouthCurveTime = MouthCurveTime

@@ -10,16 +10,23 @@ namespace JordanMod.Modules.BetterBugle;
 public class BetterBuglePatch
 {
 
+	private static readonly List<string> SupportedItemNames = ["Bugle", "Bugle_Magic", "Megaphone"];
+
 	[HarmonyPatch(typeof(Item), "Start")]
 	[HarmonyPostfix]
 	static void ItemStartPostfix(Item __instance)
 	{
-		if (__instance.itemState != ItemState.Held) return;
 		if (__instance.UIData == null) return;
 
-		List<string> supportedItemNames = ["Bugle", "Bugle_Magic", "Megaphone"];
+		if (!SupportedItemNames.Contains(__instance.UIData.itemName)) return;
 
-		if (!supportedItemNames.Contains(__instance.UIData.itemName)) return;
+		// This used to bail unless itemState was already Held. ItemState.Ground is the enum's
+		// zero value and Item.Start doesn't set state, so anything spawned into the world never
+		// got a BetterBugleSFX -- and since BugleSFXUpdatePostfix silences the vanilla BugleSFX,
+		// a Bugle picked up off the ground was completely silent. It only ever worked because
+		// SpawnItemInHand calls Interact() on the same frame it instantiates, landing
+		// SetState(Held) before Start runs.
+		if (__instance.TryGetComponent<BetterBugleSFX>(out _)) return;
 		{
 			Action secondaryAction = OnRightClick;
 			Action<float> scrollAction = OnScroll;
@@ -120,6 +127,9 @@ public class BetterBuglePatch
 	[HarmonyPostfix]
 	static void BugleSFXUpdatePostfix(BugleSFX __instance)
 	{
+		// Only silence the vanilla bugle where our replacement actually took over. Muting
+		// unconditionally meant any bugle we failed to attach to played nothing at all.
+		if (!__instance.TryGetComponent<BetterBugleSFX>(out _)) return;
 		if (__instance.volume > 0f) __instance.volume = 0;
 	}
 

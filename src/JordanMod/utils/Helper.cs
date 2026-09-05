@@ -16,6 +16,25 @@ public static class Helper
 		return item;
 	}
 
+	/// <summary>
+	/// Config URLs get typed by hand, so a missing scheme is common. Adds one when there isn't
+	/// already a scheme, picking the insecure variant for loopback since a local dev server
+	/// almost never has TLS in front of it. Call as EnsureScheme(url, "https", "http") or
+	/// EnsureScheme(url, "wss", "ws").
+	/// </summary>
+	public static string EnsureScheme(string? url, string secureScheme, string insecureScheme)
+	{
+		string trimmed = (url ?? "").Trim();
+		if (trimmed.Length == 0) return "";
+		if (trimmed.Contains("://")) return trimmed;
+
+		bool loopback = trimmed.StartsWith("localhost", System.StringComparison.OrdinalIgnoreCase)
+			|| trimmed.StartsWith("127.0.0.1", System.StringComparison.Ordinal)
+			|| trimmed.StartsWith("[::1]", System.StringComparison.Ordinal);
+
+		return (loopback ? insecureScheme : secureScheme) + "://" + trimmed;
+	}
+
 	public static bool IsOnIsland()
 	{
 		return SceneManager.GetActiveScene().name.ToLower().StartsWith("level_") || SceneManager.GetActiveScene().name == "WilIsland";

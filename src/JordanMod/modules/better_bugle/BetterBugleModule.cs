@@ -113,8 +113,10 @@ class BetterBugleModule : Module
 		List<string> scrollActionLocalizations = new(LocalizedText.LANGUAGE_COUNT);
 		for (int i = 0; i < LocalizedText.LANGUAGE_COUNT; i++) scrollActionLocalizations.Add("Change Song");
 
-		LocalizedText.mainTable.Add("SONG_LIST", secondaryActionLocalizations);
-		LocalizedText.mainTable.Add("CHANGE_SONG", scrollActionLocalizations);
+		// Indexer, not Add: Add throws if the key is already present, which happens if the game
+		// rebuilds its table (e.g. on a language change) and this runs again.
+		LocalizedText.mainTable["SONG_LIST"] = secondaryActionLocalizations;
+		LocalizedText.mainTable["CHANGE_SONG"] = scrollActionLocalizations;
 	}
 
 	private void OnAllAudioClipsLoaded()
@@ -128,8 +130,22 @@ class BetterBugleModule : Module
 			if (Song.Songs.ContainsKey(songKeyName) && !Song.FavoriteSongs.Contains(songKeyName))
 				Song.FavoriteSongs.Add(songKeyName);
 
-		if (!Song.Songs.ContainsKey(AudioSyncWorker.CurrentSongName))
-			AudioSyncWorker.CurrentSongName = Song.GetSongNames_Alphabetically()[AudioSyncWorker.CurrentSongIndex];
+		// Indexing this unguarded threw ArgumentOutOfRangeException with an empty bank (a fresh
+		// install, or a sounds folder that lost its files), and because this runs from
+		// OnAudioLoadComplete it used to leave IsLoading stuck true and kill sync/refresh for
+		// the rest of the session. CurrentSongIndex can also outrun the list after a refresh
+		// removes songs, so clamp rather than assume it is still in range.
+		List<string> songNames = Song.GetSongNames_Alphabetically();
+		if (songNames.Count == 0)
+		{
+			AudioSyncWorker.CurrentSongIndex = 0;
+			AudioSyncWorker.CurrentSongName = "None";
+		}
+		else if (!Song.Songs.ContainsKey(AudioSyncWorker.CurrentSongName))
+		{
+			AudioSyncWorker.CurrentSongIndex = Mathf.Clamp(AudioSyncWorker.CurrentSongIndex, 0, songNames.Count - 1);
+			AudioSyncWorker.CurrentSongName = songNames[AudioSyncWorker.CurrentSongIndex];
+		}
 	}
 
 }
@@ -265,6 +281,10 @@ public class BetterBugleUI : MonoBehaviour
 
 	private bool fontLoaded = false;
 
+	private const float FontSearchInterval = 5f;
+
+	private float lastFontSearchTime = -999f;
+
 	private int offsetX = 0;
 
 	private int offsetY = 70;
@@ -294,26 +314,39 @@ public class BetterBugleUI : MonoBehaviour
 
 	private void OnGUI()
 	{
-		if (!fontLoaded)
-		{
-			Font[] array = Resources.FindObjectsOfTypeAll<Font>();
-			foreach (Font val in array)
-			{
-				if (val.name == "Tetsubin Gothic")
-				{
-					customStyle = new GUIStyle(GUI.skin.label);
-					customStyle.font = val;
-					customStyle.fontSize = fontSize;
-					customStyle.alignment = TextAnchor.LowerCenter;
-					customStyle.normal.textColor = Color.white;
-					fontLoaded = true;
-					break;
-				}
-			}
-		}
+		EnsureStyle();
 		if (customStyle == null) return;
 		RenderSoundDisplay();
 		RenderPlayingDisplay();
+	}
+
+	// This used to run Resources.FindObjectsOfTypeAll<Font>() on every OnGUI call until the font
+	// turned up -- a full scan of every loaded object, several times per frame, forever if the
+	// font was never present in the scene. Now we build a usable style immediately with the
+	// default font and only re-scan for the nicer one on an interval, stopping once found.
+	private void EnsureStyle()
+	{
+		if (fontLoaded) return;
+		if (customStyle != null && Time.unscaledTime - lastFontSearchTime < FontSearchInterval) return;
+		lastFontSearchTime = Time.unscaledTime;
+
+		Font? found = null;
+		foreach (Font val in Resources.FindObjectsOfTypeAll<Font>())
+		{
+			if (val.name == "Tetsubin Gothic") { found = val; break; }
+		}
+
+		customStyle = new GUIStyle(GUI.skin.label)
+		{
+			fontSize = fontSize,
+			alignment = TextAnchor.LowerCenter,
+			normal = { textColor = Color.white }
+		};
+		if (found != null)
+		{
+			customStyle.font = found;
+			fontLoaded = true;
+		}
 	}
 
 	private void RenderSoundDisplay()

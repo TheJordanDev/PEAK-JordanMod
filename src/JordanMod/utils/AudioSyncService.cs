@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
 using JordanMod.Modules.BetterBugle;
@@ -14,18 +15,33 @@ namespace JordanMod.Utils;
 
 class AudioSyncService
 {
-	public static string API_BASE_URL => ConfigHandler.BugleSoundAPIURL.Value;
+	// Normalised once here rather than at each call site: the configured value is hand-typed, so
+	// it may be missing a scheme or carry a trailing slash, either of which broke the Uri parse.
+	public static string API_BASE_URL => Helper.EnsureScheme(ConfigHandler.BugleSoundAPIURL.Value, "https", "http").TrimEnd('/');
 
-	public async static Task<bool> DownloadAPIAudio(APIAudioFormat apiAudio, string SoundsDirectory, Song? existingSong = null)
+	public static bool DownloadAPIAudio(APIAudioFormat apiAudio, string SoundsDirectory, Song? existingSong = null)
 	{
 		bool success = true;
 		try
 		{
+			// Same audio under a different name in the bank: retire the local copy.
 			if (existingSong != null && apiAudio.Filename != existingSong.Name)
 			{
-				File.Delete(Path.Combine(SoundsDirectory, $"{existingSong.Name}.{existingSong.Extension}"));
+				string renamedFrom = Path.Combine(SoundsDirectory, $"{existingSong.Name}.{existingSong.Extension}");
+				if (File.Exists(renamedFrom)) AudioSyncWorker.TryQuarantine(renamedFrom);
 			}
-			await apiAudio.DownloadToFolder(SoundsDirectory);
+
+			// Same name under a different extension -- a leftover .mp3 when the bank now serves
+			// .ogg, say. Both would be queued by the loader and fight over the same song name, so
+			// retire every variant that isn't the one we're about to write.
+			foreach (string ext in AudioSyncWorker.AudioTypes.Keys)
+			{
+				if (string.Equals(ext, apiAudio.Extension, StringComparison.OrdinalIgnoreCase)) continue;
+				string stale = Path.Combine(SoundsDirectory, $"{apiAudio.Filename}.{ext}");
+				if (File.Exists(stale)) AudioSyncWorker.TryQuarantine(stale);
+			}
+
+			apiAudio.DownloadToFolder(SoundsDirectory);
 		}
 		catch (Exception ex)
 		{
@@ -46,7 +62,7 @@ class AudioSyncService
 			return audioClips;
 		}
 
-		using var client = new System.Net.WebClient();
+		using var client = new WebClient();
 		try
 		{
 			string json = client.DownloadString(uri);
@@ -63,15 +79,19 @@ class AudioSyncService
 
 	public static void ClearAudioClips()
 	{
+		// One scene scan shared by every song. Song.Dispose() used to run its own
+		// FindObjectsByType<AudioSource>() call, so clearing a bank of N songs meant N full
+		// scans of the scene -- the bulk of the freeze on the Bugle's right-click refresh.
+		AudioSource[] audioSources = UnityEngine.Object.FindObjectsByType<AudioSource>(FindObjectsSortMode.None);
 		foreach (Song song in Song.Sounds.Values.ToList())
 		{
-			song.Dispose();
+			song.Dispose(audioSources);
 		}
 		Song.Sounds.Clear();
-		Song.SoundsByHash.Clear();
 		Song.Songs.Clear();
 		Song.BB_VoiceLines.Clear();
-		GC.Collect();
+		// No GC.Collect() here on purpose: the audio memory is native and is already released by
+		// Object.Destroy on each clip, so a blocking full collection only added a stall.
 	}
 
 	public class APIAudioFormat
@@ -100,7 +120,10 @@ class AudioSyncService
 		[JsonProperty("owner")]
 		public string Owner { get; set; } = string.Empty;
 
-		public async Task DownloadToFolder(string folderPath)
+		// Plain WebClient rather than UnityWebRequest: this runs on a background thread, and
+		// UnityWebRequest is main-thread only. The old version also spun on `await Task.Yield()`
+		// waiting for an operation that a pool thread never drives, burning a core.
+		public void DownloadToFolder(string folderPath)
 		{
 			if (string.IsNullOrEmpty(Filename) || string.IsNullOrEmpty(Extension))
 			{
@@ -117,15 +140,9 @@ class AudioSyncService
 			string url = $"{API_BASE_URL}/audio/{Id}/download?hash={Hash}";
 			Debug.Log($"Downloading audio from URL: {url}");
 
-			using UnityWebRequest www = UnityWebRequest.Get(url);
-			var operation = www.SendWebRequest();
-			while (!operation.isDone) await Task.Yield();
-			if (www.result != UnityWebRequest.Result.Success)
-			{
-				Debug.LogError($"Failed to download API audio: {www.error}");
-				return;
-			}
-			File.WriteAllBytes(filePath, www.downloadHandler.data);
+			using var client = new WebClient();
+			byte[] data = client.DownloadData(url);
+			File.WriteAllBytes(filePath, data);
 		}
 	}
 
@@ -142,6 +159,11 @@ class AudioSyncWorker
 	}
 
 	public static readonly string SoundsDirectory = Path.Combine(BepInEx.Paths.BepInExRootPath, "bugleSounds");
+	// Files the sync pulls out of the bank folder are moved here rather than deleted. It's a
+	// subfolder of the bank itself, which is safe because the loader's Directory.GetFiles calls
+	// are non-recursive and will never see it.
+	public static readonly string QuarantineDirectory = Path.Combine(SoundsDirectory, "_removed");
+
 	public static readonly Dictionary<string, AudioType> AudioTypes = new()
 	{
 		{ "wav", AudioType.WAV },
@@ -152,6 +174,11 @@ class AudioSyncWorker
 
 	public static bool IsLoading = false;
 	public static bool IsSyncing = false;
+
+	// How many clips arrived from the download handler without their audio data decoded. Any
+	// number above zero means the first play of each would otherwise have stalled the main
+	// thread; reported once per load so the log can confirm it.
+	public static int ClipsNeedingPreload = 0;
 
 	public static int CurrentSongIndex = 0;
 	public static string CurrentSongName = "None";
@@ -169,14 +196,66 @@ class AudioSyncWorker
 	public static void TrySyncAndLoadAudioClips()
 	{
 		if (IsLoading || IsSyncing) return;
-		Task.Run(() =>
+		Task.Run(SyncAndLoadAudioClips);
+	}
+
+	// Moves a file out of the bank folder instead of deleting it, so a mistaken sync is always
+	// recoverable. Pure file I/O, safe to call from the sync thread.
+	internal static bool TryQuarantine(string filePath)
+	{
+		try
 		{
-			SyncAndLoadAudioClipsCoroutine().GetAwaiter().GetResult();
-		});
+			Directory.CreateDirectory(QuarantineDirectory);
+			string target = Path.Combine(QuarantineDirectory, Path.GetFileName(filePath));
+			if (File.Exists(target))
+			{
+				string stem = Path.GetFileNameWithoutExtension(filePath);
+				string ext = Path.GetExtension(filePath);
+				target = Path.Combine(QuarantineDirectory, $"{stem}_{DateTime.Now:yyyyMMdd_HHmmss}{ext}");
+				if (File.Exists(target)) File.Delete(target);
+			}
+			File.Move(filePath, target);
+			Debug.Log($"Moved '{Path.GetFileName(filePath)}' out of the bank folder into _removed");
+			return true;
+		}
+		catch (Exception ex)
+		{
+			Debug.LogError($"Could not move '{filePath}' out of the sounds folder: {ex.Message}");
+			return false;
+		}
+	}
+
+	// Everything in the folder that the bank doesn't list gets pulled out, so every player ends
+	// up with an identical set. BingBong voice lines are exempt.
+	private static int QuarantineFilesNotInBank(HashSet<string> bankNames)
+	{
+		Dictionary<string, Song> loaded = new(Song.Sounds);
+		int moved = 0;
+		foreach (string ext in AudioTypes.Keys)
+		{
+			foreach (string file in Directory.GetFiles(SoundsDirectory, $"*.{ext}"))
+			{
+				string name = Path.GetFileNameWithoutExtension(file);
+				if (Song.IsBingBongVoiceLine(name)) continue;
+				if (bankNames.Contains(name)) continue;
+				if (!TryQuarantine(file)) continue;
+				moved++;
+				if (loaded.TryGetValue(name, out Song? song)) Plugin.RunOnMainThread(song.Dispose);
+			}
+		}
+		return moved;
+	}
+
+	// ShowActionbar reads Time.time and touches a MonoBehaviour, so it can't be called straight
+	// from the sync thread.
+	private static void ShowActionbarOnMainThread(string message)
+	{
+		Plugin.RunOnMainThread(() => BetterBugleUI.Instance?.ShowActionbar(message));
 	}
 
 	private static IEnumerator LoadAllAudioClipsCoroutine(string directoryPath, string[]? forceReload = null)
 	{
+		ClipsNeedingPreload = 0;
 		List<(string filePath, string ext, string name)> filesToLoad = new();
 
 		foreach (var ext in AudioTypes.Keys)
@@ -212,13 +291,32 @@ class AudioSyncWorker
 			loadedCount += loadCoroutines.Count;
 			BetterBugleUI.Instance?.ShowActionbar($"Loading audio clips... {loadedCount}/{filesToLoad.Count}");
 		}
-		OnAudioLoadComplete?.Invoke();
+
+		if (ClipsNeedingPreload > 0)
+			Debug.Log($"Pre-decoded {ClipsNeedingPreload}/{filesToLoad.Count} clips that would have stalled the main thread on first play.");
+
+		// Clear the flag before notifying: a subscriber that throws must not leave IsLoading
+		// stuck true, which would wedge every sync and refresh for the rest of the session.
 		IsLoading = false;
+		try
+		{
+			OnAudioLoadComplete?.Invoke();
+		}
+		catch (Exception ex)
+		{
+			Debug.LogError($"An audio load handler threw: {ex}");
+		}
 	}
 
 	private static IEnumerator LoadAudioClipCoroutine(string filePath, string ext, string name, bool forceReload = false)
 	{
 		using UnityWebRequest www = UnityWebRequestMultimedia.GetAudioClip($"file://{filePath}", AudioTypes[ext]);
+		// Keep the clip compressed in memory and let Unity decode it during playback. The default
+		// (DecompressOnLoad) holds raw PCM for the whole session -- roughly 10 MB per minute of
+		// 44.1kHz stereo, so a ~80 MB bank becomes ~1 GB resident. Compressed costs a little CPU
+		// per playing voice, which is nothing when one bugle is sounding, and avoids both the
+		// memory and the big upfront decode. Must be set before SendWebRequest.
+		if (www.downloadHandler is DownloadHandlerAudioClip audioHandler) audioHandler.compressed = true;
 		yield return www.SendWebRequest();
 
 		if (www.result != UnityWebRequest.Result.Success) yield break;
@@ -236,11 +334,28 @@ class AudioSyncWorker
 		AudioClip audioClip = DownloadHandlerAudioClip.GetContent(www);
 		if (audioClip == null) yield break;
 
+		// GetContent hands back a DecompressOnLoad clip whose PCM data is decoded lazily, on
+		// first use. Left alone that decode happens inside the first AudioSource.Play(), on the
+		// main thread, freezing the game the first time anyone plays a song. Force it here
+		// instead: we're already on the loading path, where a stall is expected and we can yield
+		// through it. If the clip already arrived loaded this is a no-op.
+		if (audioClip.loadState != AudioDataLoadState.Loaded)
+		{
+			ClipsNeedingPreload++;
+			// loadInBackground is serialized on the asset and read-only at runtime, so this
+			// decodes synchronously. That's the point: the cost lands here rather than mid-game,
+			// and the batching in LoadAllAudioClipsCoroutine already yields between clips.
+			audioClip.LoadAudioData();
+			while (audioClip.loadState == AudioDataLoadState.Loading) yield return null;
+		}
+
 		Song song = new(name, ext, filePath, audioClip);
 		song.Register();
 	}
-	
-	private static async Task SyncAndLoadAudioClipsCoroutine()
+
+	// Runs on a thread pool thread via Task.Run. Everything in here must stay off Unity APIs;
+	// hop back through Plugin.RunOnMainThread for anything that touches the engine.
+	private static void SyncAndLoadAudioClips()
 	{
 		if (IsLoading || IsSyncing) return;
 		IsSyncing = true;
@@ -248,37 +363,52 @@ class AudioSyncWorker
 		{
 			Dictionary<AudioSyncService.APIAudioFormat, Song?> toDownload = new();
 
-			string[] existingSongNames = [.. Song.Sounds.Keys];
 			AudioSyncService.APIAudioFormat[] existingAPIFormats = [.. AudioSyncService.GetAudioClips()];
-			string[] apiExistingNames = [.. existingAPIFormats.Select(apiAudio => apiAudio.Filename)];
 
-			var songsToRemove = existingSongNames.Except(apiExistingNames).ToArray();
-			foreach (var songName in songsToRemove)
+			// A failed fetch (bad URL, offline, server error) also returns an empty list, and an
+			// empty bank would mean "nothing belongs here" -- quarantining the entire folder. Only
+			// a bank that actually listed something is allowed to drive removals.
+			if (existingAPIFormats.Length == 0)
 			{
-				if (Song.Sounds.TryGetValue(songName, out var songToDispose))
-				{
-					songToDispose.Dispose();
-					songToDispose.DeleteFile();
-				}
+				Debug.LogWarning("Audio bank returned no entries; cancelling sync rather than emptying the folder.");
+				ShowActionbarOnMainThread("Audio bank unreachable or empty, sync cancelled.");
+				IsSyncing = false;
+				return;
 			}
 
+			HashSet<string> bankNames = new(existingAPIFormats.Select(apiAudio => apiAudio.Filename), StringComparer.OrdinalIgnoreCase);
+			int quarantined = QuarantineFilesNotInBank(bankNames);
+
+			// Hashing reads the whole file off disk, so build the lookup here on the background
+			// thread rather than eagerly during loading where it stalled the main thread once
+			// per clip.
+			Dictionary<string, Song> soundsByHash = new();
+			foreach (Song song in Song.Sounds.Values.ToList())
+			{
+				// Skip anything just quarantined: its file has moved, so hashing would only fail
+				// and log noise. Its Dispose is already queued on the main thread.
+				if (!File.Exists(song.FilePath)) continue;
+				string hash = song.Hash;
+				if (!string.IsNullOrEmpty(hash)) soundsByHash[hash] = song;
+			}
 
 			foreach (AudioSyncService.APIAudioFormat apiAudio in existingAPIFormats)
 			{
-				Song? existingSong = Song.SoundsByHash.GetValueOrDefault(apiAudio.Hash);
+				Song? existingSong = soundsByHash.GetValueOrDefault(apiAudio.Hash);
 				if (existingSong == null || existingSong.Hash != apiAudio.Hash)
 				{
 					toDownload.Add(apiAudio, existingSong);
 				}
 			}
 
-			BetterBugleUI.Instance?.ShowActionbar($"Syncing audio bank... {toDownload.Count} changed/new files found.");
+			string quarantineNote = quarantined > 0 ? $", {quarantined} moved to _removed" : "";
+			ShowActionbarOnMainThread($"Syncing audio bank... {toDownload.Count} changed/new files found{quarantineNote}.");
 
 			string[] filesToOverload = [];
 
 			foreach (AudioSyncService.APIAudioFormat apiAudio in toDownload.Keys)
 			{
-				bool success = await AudioSyncService.DownloadAPIAudio(apiAudio, SoundsDirectory, toDownload[apiAudio]);
+				bool success = AudioSyncService.DownloadAPIAudio(apiAudio, SoundsDirectory, toDownload[apiAudio]);
 				if (success)
 				{
 					Debug.Log($"Successfully downloaded audio: {apiAudio.Filename}.{apiAudio.Extension}, adding to forceload");
@@ -302,7 +432,6 @@ class AudioSyncWorker
 public class Song : IDisposable
 {
 	public static readonly Dictionary<string, Song> Sounds = new();
-	public static readonly Dictionary<string, Song> SoundsByHash = new();
 
 	public static readonly Dictionary<string, Song> Songs = new();
 	public static readonly Dictionary<string, Song> BB_VoiceLines = new();
@@ -316,6 +445,8 @@ public class Song : IDisposable
 			.ThenBy(name => name)];
 	}
 
+	public static bool IsBingBongVoiceLine(string name) => name.StartsWith(BingBongPrefix, StringComparison.Ordinal);
+
 	public static void UpdateRealIndices()
 	{
 		var sortedNames = Songs.Keys.OrderBy(name => name).ToList();
@@ -328,12 +459,21 @@ public class Song : IDisposable
 		}
 	}
 
+	// Voice lines are personal, not part of the shared bank, so the sync never touches them.
+	public const string BingBongPrefix = "SFX_VO_BingBong_";
+
 	public string Name { get; set; }
 	public string Extension { get; set; }
 	public string FilePath { get; set; }
 	public AudioClip AudioClip { get; }
-	public string Hash { get; }
 	public int RealIndex { get; set; }
+
+	private string? _hash;
+
+	// Computed on demand rather than in the constructor: hashing reads the entire file and runs
+	// SHA256 over it, and the constructor is called from the load coroutine on the main thread.
+	// The only consumer is the sync comparison, which already runs on a background thread.
+	public string Hash => _hash ??= GenerateHash(FilePath);
 
 	public Song(string name, string extension, string filePath, AudioClip audioClip)
 	{
@@ -341,52 +481,52 @@ public class Song : IDisposable
 		Extension = extension;
 		FilePath = filePath;
 		AudioClip = audioClip;
-		Hash = GenerateHash(filePath);
 	}
 
 	public void Register()
 	{
 		Sounds[Name] = this;
-		SoundsByHash[Hash] = this;
-		if (Name.StartsWith("SFX_VO_BingBong_")) BB_VoiceLines[Name] = this;
+		if (IsBingBongVoiceLine(Name)) BB_VoiceLines[Name] = this;
 		else Songs[Name] = this;
 	}
 
-	public void Dispose()
+	public void Dispose() => Dispose(null);
+
+	// knownAudioSources lets a bulk clear pass in a single scene scan instead of paying for one
+	// per song.
+	public void Dispose(AudioSource[]? knownAudioSources)
 	{
 		if (AudioClip == null) return;
-		var audioSources = UnityEngine.Object.FindObjectsByType<AudioSource>(FindObjectsSortMode.None);
+		var audioSources = knownAudioSources ?? UnityEngine.Object.FindObjectsByType<AudioSource>(FindObjectsSortMode.None);
 		foreach (var audioSource in audioSources)
 		{
-			if (audioSource.clip == AudioClip)
+			if (audioSource != null && audioSource.clip == AudioClip)
 			{
 				audioSource.Stop();
 				audioSource.clip = null;
 			}
 		}
 		Sounds.Remove(Name);
-		SoundsByHash.Remove(Hash);
-		if (Name.StartsWith("SFX_VO_BingBong_")) BB_VoiceLines.Remove(Name);
+		if (IsBingBongVoiceLine(Name)) BB_VoiceLines.Remove(Name);
 		else Songs.Remove(Name);
 		UnityEngine.Object.Destroy(AudioClip);
 	}
 
-	public void DeleteFile()
-	{
-		if (AudioClip == null) return;
-		var filePath = Path.Combine(AudioSyncWorker.SoundsDirectory, $"{Name}.{Extension}");
-		if (File.Exists(filePath))
-		{
-			File.Delete(filePath);
-			Debug.Log($"Deleted local file: {filePath}");
-		}
-	}
 
 	public string GenerateHash(string filePath)
 	{
-		using var hasher = SHA256.Create();
-		var fileBytes = File.ReadAllBytes(filePath);
-		var hashBytes = hasher.ComputeHash(fileBytes);
-		return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+		try
+		{
+			using var hasher = SHA256.Create();
+			var fileBytes = File.ReadAllBytes(filePath);
+			var hashBytes = hasher.ComputeHash(fileBytes);
+			return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+		}
+		catch (Exception ex)
+		{
+			// A missing or locked file just means "no match", which makes the sync re-download it.
+			Debug.LogWarning($"Could not hash '{filePath}': {ex.Message}");
+			return string.Empty;
+		}
 	}
 }
