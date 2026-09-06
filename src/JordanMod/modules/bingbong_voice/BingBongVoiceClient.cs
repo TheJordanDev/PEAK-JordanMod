@@ -42,15 +42,22 @@ public sealed class BingBongVoiceClient
 	private Thread? _reconnectThread;
 	private volatile bool _shouldRun;
 	private volatile bool _speakerActive;
+	private volatile bool _uplinkDenied;
 	private long _expectedTimestamp = -1;
 	private int _badFrames;
 	private volatile int _lastCloseCode;
+	private int _sendFailures;
 
 	/// The live stream, or null before the first frame arrives. Read from the audio thread.
 	public VoiceStream? Stream => Volatile.Read(ref _stream);
 
 	/// True between speaker_joined and speaker_left control frames.
 	public bool SpeakerActive => _speakerActive;
+
+	/// Set when the relay says it will not take our microphone -- uplink switched off on its side,
+	/// or too many senders on this channel. Sticky until the next connect, because the answer will
+	/// not change on this socket and retrying for the rest of the session would just burn bandwidth.
+	public bool UplinkDenied => _uplinkDenied;
 
 	/// Who is speaking, when the relay tells us. Null if nobody is, or if it did not say.
 	public string? SpeakerName { get; private set; }
@@ -161,6 +168,7 @@ public sealed class BingBongVoiceClient
 		{
 			_expectedTimestamp = -1;
 			_badFrames = 0;
+			_uplinkDenied = false;
 			Debug.Log("[BingBongVoice] Connected to relay.");
 
 			// Register this lobby member so the relay's session directory knows who is listening.
@@ -246,6 +254,36 @@ public sealed class BingBongVoiceClient
 		}
 	}
 
+	/// <summary>
+	/// Sends one frame on the socket we already hold. Returns false rather than throwing when the
+	/// socket is not open, so the uplink can count failures without ever driving reconnection --
+	/// that belongs to ConnectLoop, and a second driver would fight it.
+	/// </summary>
+	public bool TrySend(byte[] frame)
+	{
+		WebSocket? socket = _socket;
+		if (socket == null || socket.ReadyState != WebSocketState.Open) return false;
+		try
+		{
+			socket.Send(frame);
+			return true;
+		}
+		catch (Exception e)
+		{
+			if (++_sendFailures <= 3) Debug.LogWarning($"[BingBongVoice] Uplink send failed: {e.Message}");
+			return false;
+		}
+	}
+
+	/// Control frames for the uplink. Text, like every other control message.
+	public bool TrySendControl(string json)
+	{
+		WebSocket? socket = _socket;
+		if (socket == null || socket.ReadyState != WebSocketState.Open) return false;
+		try { socket.Send(json); return true; }
+		catch { return false; }
+	}
+
 	private VoiceStream EnsureStream(int rate)
 	{
 		VoiceStream? current = Volatile.Read(ref _stream);
@@ -263,9 +301,11 @@ public sealed class BingBongVoiceClient
 		// Parsed leniently and fielded by substring if that fails: control messages are allowed to
 		// gain fields, and a malformed payload must never take down the receive thread.
 		string? speaker = null;
+		JObject? parsed = null;
 		try
 		{
-			speaker = JObject.Parse(json)["speaker"]?.ToString();
+			parsed = JObject.Parse(json);
+			speaker = parsed["speaker"]?.ToString();
 		}
 		catch
 		{
@@ -286,6 +326,22 @@ public sealed class BingBongVoiceClient
 			_expectedTimestamp = -1;
 			Debug.Log("[BingBongVoice] The speaker left.");
 			Plugin.RunOnMainThread(() => OnSpeakerChanged?.Invoke(null));
+		}
+		else if (json.Contains("uplink_denied"))
+		{
+			// The relay has told us it is not taking microphones. Nothing about that changes while
+			// this socket is up, so stop asking rather than sending 50 frames a second into a drop.
+			_uplinkDenied = true;
+			Debug.LogWarning($"[BingBongVoice] The relay will not take our microphone ({parsed?["reason"]?.ToString() ?? json}). Not sending until the next connect.");
+		}
+		else if (json.Contains("uplink_roster"))
+		{
+			// Purely informational, and the one thing that distinguishes "the relay is dropping my
+			// audio" from "nobody is listening" when the uplink looks like it is working locally.
+			string players = parsed?["players"] is JArray list && list.Count > 0
+				? string.Join(", ", list)
+				: "nobody";
+			Debug.Log($"[BingBongVoice] Sending room audio: {players}.");
 		}
 		else if (json.Contains("rejected"))
 		{

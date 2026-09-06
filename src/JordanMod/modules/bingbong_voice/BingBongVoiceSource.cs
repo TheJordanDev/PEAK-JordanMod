@@ -44,6 +44,7 @@ public sealed class BingBongVoiceSource : MonoBehaviour
 	private static bool _reportedBlock;    // once per session, not once per BingBong
 	private static int _liveSources;       // how many voice sources currently exist
 	private static int _playingSources;    // how many are actually enabled and audible
+	private static readonly System.Collections.Generic.List<BingBongVoiceSource> _active = new();
 	private float _gainStep = 0.0008f;
 	private long _lastWritePos;
 	private float _lastRateTime;
@@ -57,6 +58,25 @@ public sealed class BingBongVoiceSource : MonoBehaviour
 
 	/// Set by the duck patch. Live voice is attenuated until this time.
 	public float DuckUntil { get; set; }
+
+	/// False for the non-positional debug instance, which sits on a DontDestroyOnLoad object at the
+	/// origin and would otherwise look like a BingBong standing next to you.
+	public bool IsPositional { get; private set; }
+
+	/// Enabled, positional sources. Main thread only.
+	public static System.Collections.Generic.IReadOnlyList<BingBongVoiceSource> Active => _active;
+
+	public static float MinDistanceFor(float range) => Mathf.Max(1f, range / 10f);
+
+	/// <summary>
+	/// Unity's Logarithmic rolloff expressed arithmetically, so the uplink can attenuate a player's
+	/// microphone by exactly the curve BingBong's own output is heard through.
+	/// </summary>
+	public static float RangeGain(float distance, float range)
+	{
+		float min = MinDistanceFor(range);
+		return Mathf.Clamp01(min / Mathf.Max(min, distance));
+	}
 
 	public float Amplitude => _amplitude;
 
@@ -150,6 +170,7 @@ public sealed class BingBongVoiceSource : MonoBehaviour
 		{
 			_source.spatialBlend = 0f; // debug instance: non-positional, always audible
 		}
+		IsPositional = template != null;
 
 		_source.Play();
 		_liveSources++;
@@ -182,7 +203,8 @@ public sealed class BingBongVoiceSource : MonoBehaviour
 
 	private void Update()
 	{
-		_stream = BingBongVoiceModule.Instance?.Client?.Stream;
+		BingBongVoiceModule? module = BingBongVoiceModule.Instance;
+		_stream = module?.LoopbackStream ?? module?.Client?.Stream;
 
 		_targetGain = Time.time < DuckUntil
 			? ConfigHandler.BingBongVoiceDuckVolume.Value
@@ -420,6 +442,7 @@ public sealed class BingBongVoiceSource : MonoBehaviour
 		// The audio thread can and will run the filter after Destroy happens on the main thread,
 		// so flag it dead first: that check is what makes the teardown safe.
 		_dead = true;
+		_active.Remove(this);
 		_liveSources--;
 		AudioSettings.OnAudioConfigurationChanged -= OnAudioConfigChanged;
 
@@ -433,6 +456,7 @@ public sealed class BingBongVoiceSource : MonoBehaviour
 
 	private void OnDisable()
 	{
+		_active.Remove(this);
 		_playingSources--;
 		if (_source != null) _source.Stop();
 		_state = State.Buffering;
@@ -440,6 +464,7 @@ public sealed class BingBongVoiceSource : MonoBehaviour
 
 	private void OnEnable()
 	{
+		if (!_active.Contains(this)) _active.Add(this);
 		_playingSources++;
 		// Rejoin live rather than trying to resume where we left off.
 		_state = State.Buffering;

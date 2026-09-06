@@ -53,6 +53,16 @@ public sealed class VoiceRingBuffer
 		Volatile.Write(ref _write, w + samples); // publish only once the data is really there
 	}
 
+	/// Producer thread only. Same as WritePcm16 but from samples we produced ourselves, so the
+	/// loopback path does not have to encode to bytes and immediately decode again.
+	public void WritePcm16Samples(short[] src, int count)
+	{
+		if (count <= 0) return;
+		long w = _write;
+		for (int i = 0; i < count; i++) _buf[(int)((w + i) & _mask)] = src[i] * (1f / 32768f);
+		Volatile.Write(ref _write, w + count);
+	}
+
 	/// Producer thread only. Used to reproduce an exact gap the sender told us about, so a
 	/// dropped frame costs its own duration rather than shifting everything after it.
 	public void WriteSilence(int samples)

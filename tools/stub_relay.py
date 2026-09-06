@@ -12,6 +12,12 @@ Requires `websockets` (pip install websockets).
     python tools/stub_relay.py tone --sweep    # sweep 200-2000 Hz (resampling bugs are obvious)
     python tools/stub_relay.py tone --speech   # syllables and word gaps (for mouth animation)
     python tools/stub_relay.py listen          # dump received frames, to verify fan-out
+    python tools/stub_relay.py uplink          # act as the speaker; capture the game's mic to WAV
+    python tools/stub_relay.py uplink --speech # ... and send audio back at the same time
+
+Only ONE speaker may hold a channel (newest wins), so `tone` and `uplink` cannot both run --
+use `uplink --tone/--sweep/--speech` to do both directions on a single connection, which is
+also what the real web app does.
 
 Point the mod at it with, in BepInEx config:
     [BingBong Voice]
@@ -49,6 +55,7 @@ PORT = 8787
 PATH = "/voice/ws"
 
 MAGIC = 0xB1
+MAGIC_UPLINK = 0xB2   # game -> relay -> speaker; a distinct magic makes a loop impossible
 VERSION = 1
 CODEC_PCM16 = 0
 RATE_CODES = {16000: 0, 8000: 1, 24000: 2, 48000: 3}
@@ -65,11 +72,20 @@ def pack_header(seq: int, ts: int, rate: int = 16000, codec: int = CODEC_PCM16) 
 
 channels: dict[str, dict] = defaultdict(lambda: {"speaker": None, "listeners": set()})
 names: dict = {}
+stream_ids: dict = {}
+uplinkers: dict = {}   # ws -> bool, from the hello frame
+deny_uplink = False   # --deny-uplink, to exercise the client's uplink_denied path
 
 
 def roster(channel: str) -> str:
 	"""Who the relay believes is in this lobby -- the stub's stand-in for /voice/sessions."""
 	return ", ".join(sorted(names.get(w, "?") for w in channels[channel]["listeners"])) or "(nobody)"
+
+
+def uplink_roster(channel: str) -> list:
+	"""Who in this lobby says they may send a microphone. The real relay publishes this so the
+	game can tell "the relay is dropping my audio" apart from "nobody is listening"."""
+	return sorted(names.get(w, "?") for w in channels[channel]["listeners"] if uplinkers.get(w))
 
 
 def print_sessions():
@@ -134,11 +150,26 @@ async def handler(ws):
 
 	ch["listeners"].add(ws)
 	names[ws] = "?"
+	stream_id = next((i for i in range(16) if i not in stream_ids.get(channel, {}).values()), 0)
+	stream_ids.setdefault(channel, {})[ws] = stream_id
 	print(f"[relay] listener joined '{channel}' -> {len(ch['listeners'])} listening")
 	try:
 		# Listeners send a hello frame naming the player. That is what the real relay turns into
 		# its session directory, so the stub records it too and prints the roster.
 		async for msg in ws:
+			if isinstance(msg, bytes):
+				# Uplink audio. Validate, stamp our own stream id so a client cannot claim
+				# another's, and forward to the speaker ONLY -- never back to listeners, which is
+				# half of what makes an audio loop structurally impossible.
+				if deny_uplink:
+					continue
+				if len(msg) != 12 + 640 or msg[0] != MAGIC_UPLINK or msg[1] != VERSION:
+					continue
+				frame = bytearray(msg)
+				frame[3] = (frame[3] & 0x0F) | (stream_id << 4)
+				if ch["speaker"] is not None:
+					await safe_send(ch["speaker"], bytes(frame))
+				continue
 			if not isinstance(msg, str):
 				continue
 			try:
@@ -147,13 +178,29 @@ async def handler(ws):
 				continue
 			if payload.get("type") == "hello":
 				names[ws] = str(payload.get("player", "?"))
+				uplinkers[ws] = bool(payload.get("uplink"))
 				print(f"[relay] '{names[ws]}' registered in '{channel}' -> roster: {roster(channel)}")
+				if uplinkers[ws] and deny_uplink:
+					await safe_send(ws, json.dumps({"type": "uplink_denied", "reason": "disabled"}))
+					print(f"[relay] denied uplink to '{names[ws]}' (--deny-uplink)")
+				elif uplinkers[ws]:
+					await broadcast_control(channel, {"type": "uplink_roster", "players": uplink_roster(channel)})
+			elif payload.get("type") in ("uplink_start", "uplink_stop"):
+				# Enriched with who it came from, which is what the web app needs to label streams.
+				await safe_send(ch["speaker"], json.dumps({
+					"type": payload["type"], "id": stream_id, "player": names.get(ws, "?"),
+				})) if ch["speaker"] is not None else None
+				print(f"[relay] '{names.get(ws, '?')}' {payload['type']} (stream {stream_id})")
 	except Exception:
 		pass
 	finally:
 		ch["listeners"].discard(ws)
+		stream_ids.get(channel, {}).pop(ws, None)
+		was_uplinker = uplinkers.pop(ws, False)
 		who = names.pop(ws, "?")
 		print(f"[relay] '{who}' left '{channel}' -> {len(ch['listeners'])} listening")
+		if was_uplinker:
+			await broadcast_control(channel, {"type": "uplink_roster", "players": uplink_roster(channel)})
 
 
 async def fanout(channel: str, payload: bytes):
@@ -181,6 +228,10 @@ async def safe_send(ws, payload):
 
 
 async def cmd_serve(args):
+	global deny_uplink
+	deny_uplink = getattr(args, "deny_uplink", False)
+	if deny_uplink:
+		print("[relay] --deny-uplink: refusing every microphone with uplink_denied")
 	async with serve(handler, HOST, args.port, max_size=None):
 		print(f"[relay] listening on ws://{HOST}:{args.port}{PATH}")
 		print(f"[relay]   listen: ws://{HOST}:{args.port}{PATH}?token=listen:test")
@@ -244,12 +295,19 @@ def generate_frame(phase, ts, n, rate, args):
 
 async def cmd_tone(args):
 	url = f"ws://{HOST}:{args.port}{PATH}?token=speak:{args.channel}"
+	print(f"[tone] {url}")
+	async with connect(url, max_size=None) as ws:
+		await stream_tone(ws, args)
+
+
+async def stream_tone(ws, args):
+	"""Sends a test tone downstream on an already-open speaker socket."""
 	rate = args.rate
 	n = int(rate * FRAME_MS / 1000)
-	print(f"[tone] {url}  {rate} Hz, {n} samples/frame ({FRAME_MS} ms)")
+	print(f"[tone] {rate} Hz, {n} samples/frame ({FRAME_MS} ms)")
 
 	loop = asyncio.get_running_loop()
-	async with connect(url, max_size=None) as ws:
+	if True:
 		seq = 0
 		ts = 0
 		phase = 0.0
@@ -315,12 +373,73 @@ async def cmd_listen(args):
 				)
 
 
+async def cmd_uplink(args):
+	"""Acts as the web-app speaker: receives uplink audio and writes it out per stream.
+
+	The real-time ratio is the number that matters. Below ~0.98 with the gate open means the
+	sender is not keeping up and the browser would hear clicking; while gated it is expected to
+	sit low, because silence is deliberately not transmitted.
+	"""
+	import wave
+	url = f"ws://{HOST}:{args.port}{PATH}?token=speak:{args.channel}"
+	print(f"[uplink] {url}")
+	print("[uplink] writing uplink_<id>.wav, Ctrl-C to stop")
+	if args.tone or args.sweep or args.speech:
+		print("[uplink] also sending a test tone downstream on this same socket")
+
+	writers: dict = {}
+	counts: dict = {}
+	first_time = None
+	total_samples = 0
+
+	async with connect(url, max_size=None) as ws:
+		sender = None
+		if args.tone or args.sweep or args.speech:
+			args.rate = 16000
+			args.freq = getattr(args, "freq", 1000.0)
+			sender = asyncio.create_task(stream_tone(ws, args))
+		try:
+			async for msg in ws:
+				if isinstance(msg, str):
+					print("\n" + f"[uplink] control: {msg}")
+					continue
+				if len(msg) < 12 or msg[0] != MAGIC_UPLINK:
+					continue
+				sid = msg[3] >> 4
+				if sid not in writers:
+					w = wave.open(f"uplink_{sid}.wav", "wb")
+					w.setnchannels(1)
+					w.setsampwidth(2)
+					w.setframerate(16000)
+					writers[sid] = w
+					counts[sid] = 0
+					print("\n" + f"[uplink] stream {sid} opened -> uplink_{sid}.wav")
+				writers[sid].writeframes(msg[12:])
+				counts[sid] += 1
+				total_samples += (len(msg) - 12) // 2
+				if first_time is None:
+					first_time = asyncio.get_running_loop().time()
+				elapsed = asyncio.get_running_loop().time() - first_time
+				if sum(counts.values()) % 50 == 0 and elapsed > 0:
+					ratio = (total_samples / 16000) / elapsed
+					verdict = "OK" if ratio > 0.98 else "(gated or starving)"
+					print("\r" + f"[uplink] {sum(counts.values())} frames, "
+					      f"real-time ratio {ratio:.3f} {verdict}   ", end="", flush=True)
+		finally:
+			if sender is not None:
+				sender.cancel()
+			for w in writers.values():
+				w.close()
+			print("\n" + "[uplink] wav files closed")
+
+
 def main():
 	p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 	p.add_argument("--port", type=int, default=PORT)
 	sub = p.add_subparsers(dest="cmd", required=True)
 
-	sub.add_parser("serve")
+	sv = sub.add_parser("serve")
+	sv.add_argument("--deny-uplink", action="store_true", help="refuse every uplink, to test the client's uplink_denied handling")
 
 	t = sub.add_parser("tone")
 	t.add_argument("--channel", default="test")
@@ -332,8 +451,15 @@ def main():
 	l = sub.add_parser("listen")
 	l.add_argument("--channel", default="test")
 
+	u = sub.add_parser("uplink", help="act as the speaker and capture what the game sends up")
+	u.add_argument("--channel", default="test")
+	u.add_argument("--tone", action="store_true", help="also send a steady tone downstream, on the same socket")
+	u.add_argument("--sweep", action="store_true", help="also send a sweep downstream")
+	u.add_argument("--speech", action="store_true", help="also send speech-shaped audio downstream")
+	u.add_argument("--freq", type=float, default=1000.0)
+
 	args = p.parse_args()
-	fn = {"serve": cmd_serve, "tone": cmd_tone, "listen": cmd_listen}[args.cmd]
+	fn = {"serve": cmd_serve, "tone": cmd_tone, "listen": cmd_listen, "uplink": cmd_uplink}[args.cmd]
 	try:
 		asyncio.run(fn(args))
 	except KeyboardInterrupt:

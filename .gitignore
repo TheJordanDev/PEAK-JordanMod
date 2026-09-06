@@ -226,3 +226,6 @@ artifacts/**/*.zip
 *.txt
 artifacts/**
 Config.Build.user.props
+
+# Per-stream captures written by tools/stub_relay.py's uplink mode
+uplink_*.wav
